@@ -4,6 +4,10 @@ A client-side device-mockup generator. Drop in app screenshots, frame them in a 
 
 The whole app is one React component, `proofline-mockup-studio.jsx`, so it can be pasted into a Claude.ai artifact as-is. Rendering is plain HTML5 Canvas 2D.
 
+## About
+
+Proofline turns plain app screenshots into polished marketing visuals. It is a free, private take on Screeny-style mockup apps: there is no account, no watermark and no upload, because every pixel is drawn on your own device with Canvas. It is meant for indie developers and designers who need App Store and social images quickly, and it stays small on purpose: one component, no backend.
+
 ## Features
 
 - **Devices:** phone, tablet, watch, laptop, browser. Metal bezels, glass reflections, buttons, and a two-layer shadow. Six body colours, portrait or landscape (phone and tablet), tilt from -15 to 15 degrees.
@@ -44,4 +48,6 @@ Helpers: `render-check.mjs` renders one mockup to PNG through node-canvas, `shee
 
 ## Status
 
-Tested in node, not yet signed off in a real browser. The device frames are drawn procedurally, so they are polished illustrations rather than photographs. Photorealism would mean compositing onto licensed device photos.
+- **Checked:** 41 automated tests pass, and the built site was smoke-tested in headless Chromium (loads with no console errors, frames an uploaded screenshot, saved presets survive a reload).
+- **Not yet checked:** Safari, Firefox and phone browsers, plus the full manual checklist in the spec.
+- **Known limits:** HEIC photos do not open on the hosted site, because the converter is not bundled. The device frames are drawn procedurally, so they are polished illustrations rather than photographs. Photorealism would mean compositing onto licensed device photos.
