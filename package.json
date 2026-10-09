@@ -4,14 +4,17 @@
   "type": "module",
   "scripts": {
     "build": "esbuild proofline-mockup-studio.jsx --format=esm --outfile=studio.built.mjs --log-level=error",
-    "test": "npm run build && node --test"
+    "test": "npm run build && node --test",
+    "site": "esbuild site/entry.jsx --bundle --minify --format=esm --outfile=docs/app.js --define:process.env.NODE_ENV='\"production\"' --log-level=warning && tailwindcss -i site/input.css -o docs/app.css --minify && cp site/index.html docs/index.html"
   },
   "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
     "canvas": "3.2.3",
     "esbuild": "0.28.2",
     "jsdom": "29.1.1",
     "lucide-react": "1.51.0",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "tailwindcss": "^4.3.3"
   }
 }

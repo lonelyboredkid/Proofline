@@ -21,6 +21,10 @@ HEIC photos need a converter passed in as `heicConverter`; a plain artifact prev
 
 Paste `proofline-mockup-studio.jsx` into a Claude.ai artifact, or import the default export into a React 18+ app that has `react`, `react-dom` and `lucide-react`.
 
+## Hosting it as a website
+
+`docs/` holds a ready-to-serve static build (HTML, JS, CSS), so the app opens straight from a link with no install. It is published with GitHub Pages: Settings, Pages, Source "Deploy from a branch", branch `main`, folder `/docs`. After changing the app, run `npm run site` and commit the updated `docs/`.
+
 ## Development
 
 ```bash
