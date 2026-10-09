@@ -1,0 +1,6 @@
+node_modules/
+*.built.mjs
+renders/
+*.png
+before-*.jsx
+original-upload.jsx

@@ -66,6 +66,19 @@ export const FONT_CHOICES = {
   rounded: { name: "Rounded", stack: "ui-rounded, system-ui, sans-serif" },
 };
 
+export const PRESET_FIELDS = [
+  "ratioId", "orientation", "tilt", "deviceTypeId", "deviceColorId",
+  "multiLayout", "backdropSource", "colorMode", "gradientIdx", "customGradient",
+  "solidIdx", "customSolidColor", "backdropBrightness", "backdropBlur",
+  "statusBar", "captionColor", "captionPosition", "fontId", "padding", "exportScale",
+];
+
+export function presetSettingsFromState(state) {
+  const out = {};
+  for (const key of PRESET_FIELDS) out[key] = state[key];
+  return out;
+}
+
 export function isHeicFile(file) {
   const name = file && file.name ? String(file.name).toLowerCase() : "";
   const type = file && file.type ? String(file.type).toLowerCase() : "";
@@ -198,26 +211,126 @@ function drawStatusBar(ctx, sx, sy, sw, isDark) {
 
 /* ---------- device frame drawing (one function per device type) ---------- */
 
-function drawPhoneFrame(ctx, rect, img, scheme, statusBarStyle, zoom, panX, panY) {
-  const { x, y, w, h } = rect;
-  const outerR = w * 0.135;
-  const bezel = w * 0.032;
+// Realism helpers shared by every frame: metal, black glass, glare, buttons.
+function shadeHex(hex, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  const f = (c) => Math.round(amt < 0 ? c * (1 + amt) : c + (255 - c) * amt);
+  return `rgb(${f((n >> 16) & 255)},${f((n >> 8) & 255)},${f(n & 255)})`;
+}
 
-  roundRectPath(ctx, x, y, w, h, outerR);
-  const g = ctx.createLinearGradient(x, y, x + w, y + h);
-  g.addColorStop(0, scheme.edge);
+function hexLuma(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  return (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+}
+
+// Brushed-metal slab: darker edges, bright specular bands near both sides, soft
+// diagonal sheen, and a bevel line that is light on the top-left and dark on the bottom-right.
+function drawMetalBody(ctx, x, y, w, h, r, scheme) {
+  roundRectPath(ctx, x, y, w, h, r);
+  const g = ctx.createLinearGradient(x, y, x + w, y);
+  g.addColorStop(0, shadeHex(scheme.body, -0.3));
+  g.addColorStop(0.03, shadeHex(scheme.edge, 0.15));
   g.addColorStop(0.1, scheme.body);
-  g.addColorStop(0.5, scheme.body);
+  g.addColorStop(0.5, shadeHex(scheme.body, -0.06));
   g.addColorStop(0.9, scheme.body);
-  g.addColorStop(1, scheme.edge);
+  g.addColorStop(0.97, shadeHex(scheme.edge, 0.1));
+  g.addColorStop(1, shadeHex(scheme.body, -0.35));
   ctx.fillStyle = g;
   ctx.fill();
 
-  const ringInset = bezel * 0.55;
-  roundRectPath(ctx, x + ringInset, y + ringInset, w - ringInset * 2, h - ringInset * 2, outerR * 0.85);
-  ctx.strokeStyle = "rgba(255,255,255,0.16)";
-  ctx.lineWidth = Math.max(w * 0.003, 1);
+  ctx.save();
+  roundRectPath(ctx, x, y, w, h, r);
+  ctx.clip();
+  const sheen = ctx.createLinearGradient(x, y, x + w * 0.6, y + h * 0.6);
+  sheen.addColorStop(0, "rgba(255,255,255,0.22)");
+  sheen.addColorStop(0.5, "rgba(255,255,255,0)");
+  sheen.addColorStop(1, "rgba(0,0,0,0.12)");
+  ctx.fillStyle = sheen;
+  ctx.fillRect(x, y, w, h);
+  ctx.restore();
+
+  roundRectPath(ctx, x + 0.5, y + 0.5, w - 1, h - 1, r);
+  const rim = ctx.createLinearGradient(x, y, x + w, y + h);
+  rim.addColorStop(0, "rgba(255,255,255,0.7)");
+  rim.addColorStop(0.5, "rgba(255,255,255,0.12)");
+  rim.addColorStop(1, "rgba(0,0,0,0.45)");
+  ctx.strokeStyle = rim;
+  ctx.lineWidth = Math.max(Math.min(w, h) * 0.004, 1);
   ctx.stroke();
+}
+
+// The black glass surround between the metal rail and the live screen.
+function drawBlackBezel(ctx, x, y, w, h, r) {
+  roundRectPath(ctx, x, y, w, h, r);
+  const g = ctx.createLinearGradient(x, y, x + w, y + h);
+  g.addColorStop(0, "#14141a");
+  g.addColorStop(1, "#050507");
+  ctx.fillStyle = g;
+  ctx.fill();
+}
+
+// Glass over the screen. Caller must have the screen clip active.
+function drawScreenGlare(ctx, sx, sy, sw, sh) {
+  const glass = ctx.createLinearGradient(sx, sy, sx + sw * 0.5, sy + sh * 0.35);
+  glass.addColorStop(0, "rgba(255,255,255,0.10)");
+  glass.addColorStop(0.4, "rgba(255,255,255,0.02)");
+  glass.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = glass;
+  ctx.fillRect(sx, sy, sw, sh);
+
+  // Diagonal window-light reflection.
+  ctx.beginPath();
+  ctx.moveTo(sx + sw * 0.58, sy);
+  ctx.lineTo(sx + sw * 0.82, sy);
+  ctx.lineTo(sx + sw * 0.24, sy + sh);
+  ctx.lineTo(sx, sy + sh);
+  ctx.lineTo(sx, sy + sh * 0.7);
+  ctx.closePath();
+  const streak = ctx.createLinearGradient(sx, sy, sx + sw, sy + sh);
+  streak.addColorStop(0, "rgba(255,255,255,0.05)");
+  streak.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = streak;
+  ctx.fill();
+}
+
+function drawSideButton(ctx, bx, by, bw, bh, scheme) {
+  roundRectPath(ctx, bx, by, bw, bh, bw / 2);
+  const bg = ctx.createLinearGradient(bx, by, bx + bw, by);
+  bg.addColorStop(0, shadeHex(scheme.button, -0.35));
+  bg.addColorStop(0.45, shadeHex(scheme.button, 0.15));
+  bg.addColorStop(1, shadeHex(scheme.button, -0.35));
+  ctx.fillStyle = bg;
+  ctx.fill();
+}
+
+function drawCameraLens(ctx, cx, cy, r) {
+  ctx.beginPath();
+  ctx.arc(cx, cy, r * 1.35, 0, Math.PI * 2);
+  ctx.fillStyle = "#15151c";
+  ctx.fill();
+  const lens = ctx.createRadialGradient(cx - r * 0.3, cy - r * 0.3, r * 0.1, cx, cy, r);
+  lens.addColorStop(0, "#2a3a63");
+  lens.addColorStop(0.55, "#0b0f1d");
+  lens.addColorStop(1, "#020204");
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = lens;
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx - r * 0.35, cy - r * 0.35, r * 0.22, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(255,255,255,0.35)";
+  ctx.fill();
+}
+
+function drawPhoneFrame(ctx, rect, img, scheme, statusBarStyle, zoom, panX, panY) {
+  const { x, y, w, h } = rect;
+  const outerR = w * 0.135;
+  const bezel = w * 0.02;
+
+  drawMetalBody(ctx, x, y, w, h, outerR, scheme);
+
+  const rail = bezel * 0.45;
+  drawBlackBezel(ctx, x + rail, y + rail, w - rail * 2, h - rail * 2, outerR - rail);
 
   const sx = x + bezel, sy = y + bezel, sw = w - bezel * 2, sh = h - bezel * 2;
   const sr = outerR * 0.72;
@@ -229,6 +342,7 @@ function drawPhoneFrame(ctx, rect, img, scheme, statusBarStyle, zoom, panX, panY
   ctx.fillRect(sx, sy, sw, sh);
   if (img) drawImageCover(ctx, img, sx, sy, sw, sh, zoom, panX, panY);
   if (statusBarStyle && statusBarStyle !== "off") drawStatusBar(ctx, sx, sy, sw, statusBarStyle === "dark");
+  drawScreenGlare(ctx, sx, sy, sw, sh);
   ctx.restore();
 
   const islW = sw * 0.27, islH = sw * 0.072;
@@ -236,24 +350,13 @@ function drawPhoneFrame(ctx, rect, img, scheme, statusBarStyle, zoom, panX, panY
   roundRectPath(ctx, islX, islY, islW, islH, islH / 2);
   ctx.fillStyle = "#000";
   ctx.fill();
+  drawCameraLens(ctx, islX + islW - islH * 0.62, islY + islH / 2, islH * 0.24);
 
-  const lensCx = islX + islW - islH * 0.62, lensCy = islY + islH / 2;
-  ctx.beginPath();
-  ctx.arc(lensCx, lensCy, islH * 0.24, 0, Math.PI * 2);
-  ctx.fillStyle = "#0a0a12";
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(lensCx - islH * 0.06, lensCy - islH * 0.06, islH * 0.06, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(255,255,255,0.25)";
-  ctx.fill();
-
-  ctx.fillStyle = scheme.button;
-  const bw = Math.max(w * 0.011, 2);
-  const btn = (bx, by, bh) => { roundRectPath(ctx, bx, by, bw, bh, bw / 2); ctx.fill(); };
-  btn(x - bw, y + h * 0.108, h * 0.038);
-  btn(x - bw, y + h * 0.165, h * 0.062);
-  btn(x - bw, y + h * 0.235, h * 0.062);
-  btn(x + w, y + h * 0.155, h * 0.09);
+  const bw = Math.max(w * 0.016, 3);
+  drawSideButton(ctx, x - bw, y + h * 0.108, bw, h * 0.038, scheme);
+  drawSideButton(ctx, x - bw, y + h * 0.165, bw, h * 0.062, scheme);
+  drawSideButton(ctx, x - bw, y + h * 0.235, bw, h * 0.062, scheme);
+  drawSideButton(ctx, x + w, y + h * 0.155, bw, h * 0.09, scheme);
 }
 
 function drawTabletFrame(ctx, rect, img, scheme, statusBarStyle, zoom, panX, panY) {
@@ -261,21 +364,10 @@ function drawTabletFrame(ctx, rect, img, scheme, statusBarStyle, zoom, panX, pan
   const outerR = w * 0.09;
   const bezel = w * 0.045;
 
-  roundRectPath(ctx, x, y, w, h, outerR);
-  const g = ctx.createLinearGradient(x, y, x + w, y + h);
-  g.addColorStop(0, scheme.edge);
-  g.addColorStop(0.1, scheme.body);
-  g.addColorStop(0.5, scheme.body);
-  g.addColorStop(0.9, scheme.body);
-  g.addColorStop(1, scheme.edge);
-  ctx.fillStyle = g;
-  ctx.fill();
+  drawMetalBody(ctx, x, y, w, h, outerR, scheme);
 
-  const ringInset = bezel * 0.4;
-  roundRectPath(ctx, x + ringInset, y + ringInset, w - ringInset * 2, h - ringInset * 2, outerR * 0.9);
-  ctx.strokeStyle = "rgba(255,255,255,0.16)";
-  ctx.lineWidth = Math.max(w * 0.003, 1);
-  ctx.stroke();
+  const rail = bezel * 0.2;
+  drawBlackBezel(ctx, x + rail, y + rail, w - rail * 2, h - rail * 2, outerR - rail);
 
   const sx = x + bezel, sy = y + bezel, sw = w - bezel * 2, sh = h - bezel * 2;
   const sr = outerR * 0.5;
@@ -287,19 +379,15 @@ function drawTabletFrame(ctx, rect, img, scheme, statusBarStyle, zoom, panX, pan
   ctx.fillRect(sx, sy, sw, sh);
   if (img) drawImageCover(ctx, img, sx, sy, sw, sh, zoom, panX, panY);
   if (statusBarStyle && statusBarStyle !== "off") drawStatusBar(ctx, sx, sy, sw, statusBarStyle === "dark");
+  drawScreenGlare(ctx, sx, sy, sw, sh);
   ctx.restore();
 
-  ctx.beginPath();
-  ctx.arc(x + w / 2, y + bezel / 2, Math.max(bezel * 0.14, 2), 0, Math.PI * 2);
-  ctx.fillStyle = "#0a0a12";
-  ctx.fill();
+  drawCameraLens(ctx, x + w / 2, y + bezel / 2, Math.max(bezel * 0.14, 2));
 
-  ctx.fillStyle = scheme.button;
   const bw = Math.max(w * 0.009, 2);
-  const btn = (bx, by, bh) => { roundRectPath(ctx, bx, by, bw, bh, bw / 2); ctx.fill(); };
-  btn(x - bw, y + h * 0.1, h * 0.05);
-  btn(x - bw, y + h * 0.17, h * 0.05);
-  btn(x + w, y + h * 0.12, h * 0.04);
+  drawSideButton(ctx, x - bw, y + h * 0.1, bw, h * 0.05, scheme);
+  drawSideButton(ctx, x - bw, y + h * 0.17, bw, h * 0.05, scheme);
+  drawSideButton(ctx, x + w, y + h * 0.12, bw, h * 0.04, scheme);
 }
 
 function drawWatchFrame(ctx, rect, img, scheme, zoom, panX, panY) {
@@ -311,20 +399,65 @@ function drawWatchFrame(ctx, rect, img, scheme, zoom, panX, panY) {
   const bandX = x + (w - bandW) / 2;
   const bandH = (h - caseH) / 2 + h * 0.02;
 
-  ctx.fillStyle = scheme.button;
-  roundRectPath(ctx, bandX, y, bandW, bandH, w * 0.06);
-  ctx.fill();
-  roundRectPath(ctx, bandX, y + h - bandH, bandW, bandH, w * 0.06);
-  ctx.fill();
+  // Straps: side-shaded, ribbed, and darkened where they tuck under the case.
+  const strap = (by, towardCase) => {
+    roundRectPath(ctx, bandX, by, bandW, bandH, w * 0.06);
+    const sg = ctx.createLinearGradient(bandX, 0, bandX + bandW, 0);
+    sg.addColorStop(0, shadeHex(scheme.button, -0.3));
+    sg.addColorStop(0.35, shadeHex(scheme.button, 0.08));
+    sg.addColorStop(0.65, scheme.button);
+    sg.addColorStop(1, shadeHex(scheme.button, -0.35));
+    ctx.fillStyle = sg;
+    ctx.fill();
+    ctx.save();
+    roundRectPath(ctx, bandX, by, bandW, bandH, w * 0.06);
+    ctx.clip();
+    ctx.strokeStyle = "rgba(0,0,0,0.12)";
+    ctx.lineWidth = Math.max(w * 0.004, 1);
+    const step = bandH / 9;
+    for (let i = 1; i < 9; i++) {
+      const ly = by + i * step;
+      ctx.beginPath();
+      ctx.moveTo(bandX, ly);
+      ctx.lineTo(bandX + bandW, ly);
+      ctx.stroke();
+    }
+    const fromY = towardCase ? by + bandH : by;
+    const toY = towardCase ? by : by + bandH;
+    const fade = ctx.createLinearGradient(0, fromY, 0, toY);
+    fade.addColorStop(0, "rgba(0,0,0,0.45)");
+    fade.addColorStop(0.5, "rgba(0,0,0,0)");
+    ctx.fillStyle = fade;
+    ctx.fillRect(bandX, by, bandW, bandH);
+    ctx.restore();
+  };
+  strap(y, true);
+  strap(y + h - bandH, false);
 
-  roundRectPath(ctx, x, caseY, w, caseH, caseR);
-  const g = ctx.createLinearGradient(x, caseY, x + w, caseY + caseH);
-  g.addColorStop(0, scheme.edge);
-  g.addColorStop(0.15, scheme.body);
-  g.addColorStop(0.85, scheme.body);
-  g.addColorStop(1, scheme.edge);
-  ctx.fillStyle = g;
+  // Digital Crown first (sits behind the case edge), with grip ridges.
+  const crownX = x + w - w * 0.01, crownY = caseY + caseH * 0.3, crownW = w * 0.06, crownH = caseH * 0.16;
+  roundRectPath(ctx, crownX, crownY, crownW, crownH, w * 0.02);
+  const cg = ctx.createLinearGradient(crownX, crownY, crownX + crownW, crownY);
+  cg.addColorStop(0, shadeHex(scheme.button, -0.3));
+  cg.addColorStop(0.5, shadeHex(scheme.edge, 0.1));
+  cg.addColorStop(1, shadeHex(scheme.button, -0.3));
+  ctx.fillStyle = cg;
   ctx.fill();
+  ctx.strokeStyle = "rgba(0,0,0,0.35)";
+  ctx.lineWidth = Math.max(w * 0.004, 1);
+  for (let i = 1; i < 7; i++) {
+    const ly = crownY + (crownH * i) / 7;
+    ctx.beginPath();
+    ctx.moveTo(crownX + crownW * 0.15, ly);
+    ctx.lineTo(crownX + crownW * 0.95, ly);
+    ctx.stroke();
+  }
+  drawSideButton(ctx, x + w - w * 0.01, caseY + caseH * 0.52, w * 0.045, caseH * 0.1, scheme);
+
+  drawMetalBody(ctx, x, caseY, w, caseH, caseR, scheme);
+
+  const rail = w * 0.02;
+  drawBlackBezel(ctx, x + rail, caseY + rail, w - rail * 2, caseH - rail * 2, caseR - rail);
 
   const bezel = w * 0.065;
   const sx = x + bezel, sy = caseY + bezel, sw = w - bezel * 2, sh = caseH - bezel * 2;
@@ -336,13 +469,8 @@ function drawWatchFrame(ctx, rect, img, scheme, zoom, panX, panY) {
   ctx.fillStyle = "#000";
   ctx.fillRect(sx, sy, sw, sh);
   if (img) drawImageCover(ctx, img, sx, sy, sw, sh, zoom, panX, panY);
+  drawScreenGlare(ctx, sx, sy, sw, sh);
   ctx.restore();
-
-  ctx.fillStyle = scheme.button;
-  roundRectPath(ctx, x + w - w * 0.01, caseY + caseH * 0.3, w * 0.06, caseH * 0.16, w * 0.02);
-  ctx.fill();
-  roundRectPath(ctx, x + w - w * 0.01, caseY + caseH * 0.52, w * 0.045, caseH * 0.1, w * 0.015);
-  ctx.fill();
 }
 
 function drawLaptopFrame(ctx, rect, img, scheme, zoom, panX, panY) {
@@ -351,11 +479,12 @@ function drawLaptopFrame(ctx, rect, img, scheme, zoom, panX, panY) {
   const screenH = h - deckH;
   const outerR = w * 0.022;
 
-  roundRectPath(ctx, x, y, w, screenH, outerR);
-  ctx.fillStyle = scheme.body;
-  ctx.fill();
+  drawMetalBody(ctx, x, y, w, screenH, outerR, scheme);
 
   const bezel = w * 0.016;
+  const rail = bezel * 0.18;
+  drawBlackBezel(ctx, x + rail, y + rail, w - rail * 2, screenH - rail * 2, outerR - rail);
+
   const sx = x + bezel, sy = y + bezel, sw = w - bezel * 2, sh = screenH - bezel * 2;
   ctx.save();
   roundRectPath(ctx, sx, sy, sw, sh, outerR * 0.6);
@@ -363,25 +492,63 @@ function drawLaptopFrame(ctx, rect, img, scheme, zoom, panX, panY) {
   ctx.fillStyle = "#000";
   ctx.fillRect(sx, sy, sw, sh);
   if (img) drawImageCover(ctx, img, sx, sy, sw, sh, zoom, panX, panY);
+  drawScreenGlare(ctx, sx, sy, sw, sh);
   ctx.restore();
 
+  // Camera notch tucked into the top edge of the display.
+  const nW = w * 0.1, nH = bezel * 0.95;
   ctx.beginPath();
-  ctx.arc(x + w / 2, y + bezel * 0.55, Math.max(bezel * 0.2, 2), 0, Math.PI * 2);
-  ctx.fillStyle = "#0a0a12";
+  ctx.moveTo(x + w / 2 - nW / 2, sy);
+  ctx.lineTo(x + w / 2 + nW / 2, sy);
+  ctx.lineTo(x + w / 2 + nW / 2, sy + nH * 0.55);
+  ctx.quadraticCurveTo(x + w / 2 + nW / 2, sy + nH, x + w / 2 + nW / 2 - nH * 0.45, sy + nH);
+  ctx.lineTo(x + w / 2 - nW / 2 + nH * 0.45, sy + nH);
+  ctx.quadraticCurveTo(x + w / 2 - nW / 2, sy + nH, x + w / 2 - nW / 2, sy + nH * 0.55);
+  ctx.closePath();
+  ctx.fillStyle = "#050507";
   ctx.fill();
+  drawCameraLens(ctx, x + w / 2, sy + nH * 0.45, Math.max(nH * 0.18, 1.5));
 
+  // Hinge shadow where the lid meets the base.
+  const baseTop = y + screenH;
+  const hinge = ctx.createLinearGradient(0, baseTop - deckH * 0.5, 0, baseTop);
+  hinge.addColorStop(0, "rgba(0,0,0,0)");
+  hinge.addColorStop(1, "rgba(0,0,0,0.35)");
+  ctx.fillStyle = hinge;
+  ctx.fillRect(x + w * 0.01, baseTop - deckH * 0.5, w * 0.98, deckH * 0.5);
+
+  // Base slab: flat top, rounded bottom corners, front lip with a thumb notch.
   const deckW = w * 1.06;
   const deckX = x - (deckW - w) / 2;
-  roundRectPath(ctx, deckX, y + screenH, deckW, deckH, deckH * 0.35);
-  const dg = ctx.createLinearGradient(deckX, 0, deckX + deckW, 0);
-  dg.addColorStop(0, scheme.edge);
-  dg.addColorStop(0.5, scheme.body);
-  dg.addColorStop(1, scheme.edge);
+  const rb = deckH * 0.9;
+  ctx.beginPath();
+  ctx.moveTo(deckX, baseTop);
+  ctx.lineTo(deckX + deckW, baseTop);
+  ctx.lineTo(deckX + deckW, baseTop + deckH - rb);
+  ctx.quadraticCurveTo(deckX + deckW, baseTop + deckH, deckX + deckW - rb, baseTop + deckH);
+  ctx.lineTo(deckX + rb, baseTop + deckH);
+  ctx.quadraticCurveTo(deckX, baseTop + deckH, deckX, baseTop + deckH - rb);
+  ctx.closePath();
+  const dg = ctx.createLinearGradient(0, baseTop, 0, baseTop + deckH);
+  dg.addColorStop(0, shadeHex(scheme.edge, 0.2));
+  dg.addColorStop(0.35, scheme.body);
+  dg.addColorStop(1, shadeHex(scheme.body, -0.35));
   ctx.fillStyle = dg;
   ctx.fill();
+  const dgx = ctx.createLinearGradient(deckX, 0, deckX + deckW, 0);
+  dgx.addColorStop(0, "rgba(0,0,0,0.3)");
+  dgx.addColorStop(0.08, "rgba(0,0,0,0)");
+  dgx.addColorStop(0.92, "rgba(0,0,0,0)");
+  dgx.addColorStop(1, "rgba(0,0,0,0.3)");
+  ctx.fillStyle = dgx;
+  ctx.fill();
 
-  roundRectPath(ctx, x + w * 0.43, y + screenH + deckH * 0.28, w * 0.14, deckH * 0.2, deckH * 0.1);
-  ctx.fillStyle = "rgba(0,0,0,0.22)";
+  const lipW = w * 0.16;
+  ctx.beginPath();
+  ctx.moveTo(x + w / 2 - lipW / 2, baseTop);
+  ctx.quadraticCurveTo(x + w / 2, baseTop + deckH * 0.75, x + w / 2 + lipW / 2, baseTop);
+  ctx.closePath();
+  ctx.fillStyle = "rgba(0,0,0,0.28)";
   ctx.fill();
 }
 
@@ -389,6 +556,7 @@ function drawBrowserFrame(ctx, rect, img, scheme, zoom, panX, panY) {
   const { x, y, w, h } = rect;
   const barH = h * 0.09;
   const outerR = w * 0.018;
+  const isLight = hexLuma(scheme.body) > 0.5;
 
   roundRectPath(ctx, x, y, w, h, outerR);
   ctx.fillStyle = scheme.body;
@@ -397,22 +565,63 @@ function drawBrowserFrame(ctx, rect, img, scheme, zoom, panX, panY) {
   ctx.save();
   roundRectPath(ctx, x, y, w, h, outerR);
   ctx.clip();
+
+  // Title/toolbar: subtle top-lit gradient plus a hairline separator.
+  const tg = ctx.createLinearGradient(0, y, 0, y + barH);
+  tg.addColorStop(0, shadeHex(scheme.body, isLight ? 0.35 : 0.12));
+  tg.addColorStop(1, shadeHex(scheme.body, isLight ? -0.04 : -0.2));
+  ctx.fillStyle = tg;
   ctx.fillRect(x, y, w, barH);
+  ctx.fillStyle = isLight ? "rgba(0,0,0,0.18)" : "rgba(0,0,0,0.55)";
+  ctx.fillRect(x, y + barH - 1, w, 1);
 
   const dotR = barH * 0.14;
   const dotY = y + barH / 2;
   ["#ff5f57", "#febc2e", "#28c840"].forEach((c, i) => {
+    const cx = x + w * 0.025 + i * dotR * 2.6;
+    const dg = ctx.createRadialGradient(cx - dotR * 0.3, dotY - dotR * 0.3, dotR * 0.1, cx, dotY, dotR);
+    dg.addColorStop(0, shadeHex(c, 0.35));
+    dg.addColorStop(1, c);
     ctx.beginPath();
-    ctx.arc(x + w * 0.025 + i * dotR * 2.6, dotY, dotR, 0, Math.PI * 2);
-    ctx.fillStyle = c;
+    ctx.arc(cx, dotY, dotR, 0, Math.PI * 2);
+    ctx.fillStyle = dg;
     ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.25)";
+    ctx.lineWidth = Math.max(dotR * 0.12, 0.5);
+    ctx.stroke();
   });
+
+  // Address field with lock glyph and host name.
+  const pillW = w * 0.42, pillH = barH * 0.56;
+  const pillX = x + w / 2 - pillW / 2, pillY = y + (barH - pillH) / 2;
+  roundRectPath(ctx, pillX, pillY, pillW, pillH, pillH / 2);
+  ctx.fillStyle = isLight ? "rgba(0,0,0,0.07)" : "rgba(255,255,255,0.1)";
+  ctx.fill();
+  const ink = isLight ? "rgba(0,0,0,0.55)" : "rgba(255,255,255,0.65)";
+  ctx.fillStyle = ink;
+  ctx.font = `500 ${Math.round(pillH * 0.52)}px system-ui, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("proofline.app", pillX + pillW / 2 + pillH * 0.3, pillY + pillH / 2 + 0.5);
+  const lw = pillH * 0.22, lh = pillH * 0.18;
+  const lx = pillX + pillW / 2 - pillW * 0.12 - lw / 2, ly = pillY + pillH / 2 - lh * 0.1;
+  ctx.fillRect(lx, ly, lw, lh);
+  ctx.strokeStyle = ink;
+  ctx.lineWidth = Math.max(pillH * 0.05, 0.8);
+  ctx.beginPath();
+  ctx.arc(lx + lw / 2, ly, lw * 0.32, Math.PI, 0);
+  ctx.stroke();
 
   const sx = x, sy = y + barH, sw = w, sh = h - barH;
   ctx.fillStyle = "#000";
   ctx.fillRect(sx, sy, sw, sh);
   if (img) drawImageCover(ctx, img, sx, sy, sw, sh, zoom, panX, panY);
   ctx.restore();
+
+  roundRectPath(ctx, x + 0.5, y + 0.5, w - 1, h - 1, outerR);
+  ctx.strokeStyle = isLight ? "rgba(0,0,0,0.28)" : "rgba(255,255,255,0.18)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
 }
 
 function drawDeviceFrame(ctx, rect, img, scheme, statusBarStyle, zoom, panX, panY, deviceTypeId) {
@@ -434,29 +643,37 @@ function drawDeviceFrame(ctx, rect, img, scheme, statusBarStyle, zoom, panX, pan
 
 function drawDeviceShadow(ctx, rect, shapeW, shapeH, cornerRadius, angle) {
   const shortSide = Math.min(rect.w, rect.h);
-  const D = shortSide * 0.09;
-  ctx.save();
-  ctx.shadowColor = "rgba(0,0,0,0.35)";
-  ctx.shadowBlur = shortSide * 0.16;
-  if (angle) {
-    const cx = rect.x + rect.w / 2;
-    const cy = rect.y + rect.h / 2;
-    ctx.translate(cx, cy);
-    ctx.rotate(angle);
-    // Compensate so the shadow still falls straight down on screen, regardless
-    // of how the shape itself is rotated (shadow offsets are transformed by
-    // the current matrix same as everything else, so we counter-rotate here).
-    ctx.shadowOffsetX = D * Math.sin(angle);
-    ctx.shadowOffsetY = D * Math.cos(angle);
-    roundRectPath(ctx, -shapeW / 2, -shapeH / 2, shapeW, shapeH, cornerRadius);
-  } else {
-    ctx.shadowOffsetX = 0;
-    ctx.shadowOffsetY = D;
-    roundRectPath(ctx, rect.x, rect.y, rect.w, rect.h, cornerRadius);
+  // Two layers: a wide soft ambient shadow plus a tight contact shadow close to the body.
+  const layers = [
+    { D: shortSide * 0.09, blur: shortSide * 0.16, color: "rgba(0,0,0,0.35)" },
+    { D: shortSide * 0.016, blur: shortSide * 0.03, color: "rgba(0,0,0,0.4)" },
+  ];
+  for (const { D, blur, color } of layers) {
+    ctx.save();
+    ctx.shadowColor = color;
+    ctx.shadowBlur = blur;
+    if (angle) {
+      const cx = rect.x + rect.w / 2;
+      const cy = rect.y + rect.h / 2;
+      ctx.translate(cx, cy);
+      ctx.rotate(angle);
+      // Compensate so the shadow still falls straight down on screen, regardless
+      // of how the shape itself is rotated (shadow offsets are transformed by
+      // the current matrix same as everything else, so we counter-rotate here).
+      ctx.shadowOffsetX = D * Math.sin(angle);
+      ctx.shadowOffsetY = D * Math.cos(angle);
+      roundRectPath(ctx, -shapeW / 2, -shapeH / 2, shapeW, shapeH, cornerRadius);
+    } else {
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = D;
+      const cx = rect.x + rect.w / 2;
+      const cy = rect.y + rect.h / 2;
+      roundRectPath(ctx, cx - shapeW / 2, cy - shapeH / 2, shapeW, shapeH, cornerRadius);
+    }
+    ctx.fillStyle = "rgba(0,0,0,1)";
+    ctx.fill();
+    ctx.restore();
   }
-  ctx.fillStyle = "rgba(0,0,0,1)";
-  ctx.fill();
-  ctx.restore();
 }
 
 // Draws one device (shadow + frame), handling orientation swap and tilt as a
@@ -471,9 +688,12 @@ function drawDeviceWithEffects(ctx, rect, extraTiltRad, orientation, deviceTypeI
   const swap = effectiveOrientation === "landscape";
   const shapeW = swap ? rect.h : rect.w;
   const shapeH = swap ? rect.w : rect.h;
-  const cornerRadius = shortSide * (deviceTypeId === "watch" ? 0.3 : 0.135);
+  // The watch's straps are narrower than its box, so cast the shadow from the case only.
+  const isWatch = deviceTypeId === "watch";
+  const shadowH = isWatch ? shapeH * 0.74 : shapeH;
+  const cornerRadius = isWatch ? shapeW * 0.24 : shortSide * 0.135;
 
-  drawDeviceShadow(ctx, rect, shapeW, shapeH, cornerRadius, totalAngle);
+  drawDeviceShadow(ctx, rect, shapeW, shadowH, cornerRadius, totalAngle);
 
   if (totalAngle !== 0) {
     const cx = rect.x + rect.w / 2;
@@ -960,6 +1180,7 @@ const storage = {
 const MANIFEST_KEY = "proofline:manifest";
 const IMAGE_KEY_PREFIX = "proofline:image:";
 const BGIMAGE_KEY = "proofline:bgimage";
+const PRESETS_KEY = "proofline:presets";
 
 const loadImageFromSrc = (src) =>
   new Promise((resolve, reject) => {
@@ -1047,6 +1268,8 @@ export default function ProoflineStudio({ heicConverter } = {}) {
   const [fileError, setFileError] = useState(null);
   const [saveStatus, setSaveStatus] = useState("idle"); // idle | saving | saved
   const [hydrated, setHydrated] = useState(false);
+  const [presets, setPresets] = useState([]);
+  const [presetNameDraft, setPresetNameDraft] = useState("");
 
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -1133,6 +1356,18 @@ export default function ProoflineStudio({ heicConverter } = {}) {
             } catch (e) {}
           }
         }
+
+        try {
+          const rawPresets = await storage.get(PRESETS_KEY);
+          const parsed = rawPresets ? JSON.parse(rawPresets) : [];
+          setPresets(
+            Array.isArray(parsed)
+              ? parsed.filter(
+                  (p) => p && typeof p.id === "string" && typeof p.name === "string" && p.settings && typeof p.settings === "object"
+                )
+              : []
+          );
+        } catch (e) { /* no saved presets */ }
       } catch (e) {
         /* no saved project, or storage unavailable — start fresh */
       } finally {
@@ -1224,6 +1459,11 @@ export default function ProoflineStudio({ heicConverter } = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated, saveProject]);
 
+  useEffect(() => {
+    if (!hydrated) return;
+    storage.set(PRESETS_KEY, JSON.stringify(presets));
+  }, [presets, hydrated]);
+
   const clearSavedProject = async () => {
     await storage.remove(MANIFEST_KEY);
     for (const s of slides) await storage.remove(IMAGE_KEY_PREFIX + s.id);
@@ -1233,6 +1473,49 @@ export default function ProoflineStudio({ heicConverter } = {}) {
     setBgImage(null);
     setSaveStatus("idle");
   };
+
+  const savePreset = (name) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const settings = presetSettingsFromState({
+      ratioId, orientation, tilt, deviceTypeId, deviceColorId, multiLayout,
+      backdropSource, colorMode, gradientIdx, customGradient, solidIdx,
+      customSolidColor, backdropBrightness, backdropBlur, statusBar,
+      captionColor, captionPosition, fontId, padding, exportScale,
+    });
+    setPresets((prev) => [
+      ...prev.filter((p) => p.name !== trimmed),
+      { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: trimmed, settings },
+    ]);
+  };
+
+  const applyPreset = (preset) => {
+    const s = preset.settings;
+    if (s.ratioId) setRatioId(s.ratioId);
+    if (s.orientation) setOrientation(s.orientation);
+    if (typeof s.tilt === "number") setTilt(s.tilt);
+    if (s.deviceTypeId) setDeviceTypeId(s.deviceTypeId);
+    if (s.deviceColorId) setDeviceColorId(s.deviceColorId);
+    if (s.multiLayout) setMultiLayout(s.multiLayout);
+    // A photo backdrop isn't saved in a preset; without one loaded, switching would just show the default gradient.
+    const needsPhoto = s.backdropSource === "image" || s.backdropSource === "unsplash";
+    if (s.backdropSource && (!needsPhoto || bgImage)) setBackdropSource(s.backdropSource);
+    if (s.colorMode) setColorMode(s.colorMode);
+    if (typeof s.gradientIdx === "number") setGradientIdx(s.gradientIdx);
+    if (s.customGradient) setCustomGradient(s.customGradient);
+    if (typeof s.solidIdx === "number") setSolidIdx(s.solidIdx);
+    if (s.customSolidColor) setCustomSolidColor(s.customSolidColor);
+    if (typeof s.backdropBrightness === "number") setBackdropBrightness(s.backdropBrightness);
+    if (typeof s.backdropBlur === "number") setBackdropBlur(s.backdropBlur);
+    if (s.statusBar) setStatusBar(s.statusBar);
+    if (s.captionColor) setCaptionColor(s.captionColor);
+    if (s.captionPosition) setCaptionPosition(s.captionPosition);
+    if (s.fontId) setFontId(s.fontId);
+    if (typeof s.padding === "number") setPadding(s.padding);
+    if (typeof s.exportScale === "number") setExportScale(s.exportScale);
+  };
+
+  const deletePreset = (id) => setPresets((prev) => prev.filter((p) => p.id !== id));
 
   /* ---------- file loading (JPG/PNG native, HEIC via optional converter) ---------- */
   const loadImage = (file) =>
@@ -1891,6 +2174,60 @@ export default function ProoflineStudio({ heicConverter } = {}) {
             </span>
           )}
         </div>
+
+        <Section n="00" title="Presets">
+          <div className="flex gap-2">
+            <input
+              type="text"
+              placeholder="Preset name"
+              value={presetNameDraft}
+              onChange={(e) => setPresetNameDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  savePreset(presetNameDraft);
+                  setPresetNameDraft("");
+                }
+              }}
+              className="flex-1 bg-zinc-800 border border-zinc-700 rounded-md px-3 py-2 text-sm placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+            />
+            <button
+              onClick={() => {
+                savePreset(presetNameDraft);
+                setPresetNameDraft("");
+              }}
+              className="px-3 py-2 rounded-md bg-orange-500 hover:bg-orange-400 text-zinc-950 text-sm font-semibold"
+            >
+              Save preset
+            </button>
+          </div>
+          {presets.length > 0 ? (
+            <div className="space-y-1">
+              {presets.map((p) => (
+                <div
+                  key={p.id}
+                  className="flex items-center gap-2 bg-zinc-800 border border-zinc-700 rounded-md px-3 py-2"
+                >
+                  <span className="flex-1 text-sm text-zinc-200 truncate">{p.name}</span>
+                  <button
+                    onClick={() => applyPreset(p)}
+                    className="text-xs font-semibold text-orange-400 hover:text-orange-300"
+                  >
+                    Apply
+                  </button>
+                  <button
+                    onClick={() => deletePreset(p.id)}
+                    className="text-zinc-500 hover:text-zinc-300"
+                    aria-label={`Delete preset ${p.name}`}
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-zinc-600">Save your first look above.</p>
+          )}
+        </Section>
 
         <Section n="01" title="Source">
           <button

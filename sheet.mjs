@@ -1,0 +1,10 @@
+import { createCanvas, loadImage } from "canvas";
+import fs from "node:fs";
+const [out, cols, ...names] = process.argv.slice(2);
+const imgs = await Promise.all(names.map((n) => loadImage(n)));
+const C = Number(cols), tw = 360, th = 640;
+const rows = Math.ceil(imgs.length / C);
+const c = createCanvas(C * (tw + 8) + 8, rows * (th + 8) + 8); const g = c.getContext("2d");
+g.fillStyle = "#222"; g.fillRect(0, 0, c.width, c.height);
+imgs.forEach((im, i) => g.drawImage(im, 8 + (i % C) * (tw + 8), 8 + Math.floor(i / C) * (th + 8), tw, th));
+fs.writeFileSync(out, c.toBuffer("image/png"));
