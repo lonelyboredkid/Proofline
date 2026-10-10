@@ -46,6 +46,10 @@ Helpers: `render-check.mjs` renders one mockup to PNG through node-canvas, `shee
 
 `proofline-spec-and-test-plan.md` is the project spec: feature inventory, known issues, state schema, and the manual checklist to run before calling a change done.
 
+## Releases
+
+The latest version is **v1.0.0**. See [CHANGELOG.md](CHANGELOG.md) for what each release contains, and the repo's Releases page for tagged versions. To cut a new one: update the changelog, run `npm test` and `npm run site`, commit, then tag it (`git tag -a vX.Y.Z -m "vX.Y.Z"` and `git push origin vX.Y.Z`).
+
 ## Status
 
 - **Checked:** 41 automated tests pass, and the built site was smoke-tested in headless Chromium (loads with no console errors, frames an uploaded screenshot, saved presets survive a reload).
