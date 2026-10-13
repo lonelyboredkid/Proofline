@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- 2x/3x exports had a thinner shadow and weaker backdrop blur than the preview (canvas shadow/filter lengths ignore `ctx.scale`); tilted devices had a sideways-skewed shadow.
+- A saved Unsplash background broke every export after a reload (canvas tainted by a non-CORS reload); it is now reloaded with CORS, the user is told if it fails, and the credit survives reload.
+- Storage no longer fills silently: images are written once, removed with their slide, and a failed save shows "not saved".
+- Export failures now show an error instead of failing silently; WebP on Safari is named `.png`.
+
+### Added
+- Browser/real-app tests (`tests/`): 26 tests in logic, Chromium canvas and full-app layers. Presets now cover 27 settings.
+- `proofline-spec-and-test-plan.md` rewritten against the current code, with open issues listed.
+
 ## v1.0.0 - 2026-10-10
 
 First tagged release.

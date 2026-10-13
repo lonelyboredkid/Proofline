@@ -1,162 +1,144 @@
 # Proofline — Development Spec & Test Plan
-*Written 2026-09-27, from the actual `proofline-mockup-studio.jsx` (originally 2,423 lines; 2556 after the 2026-09-27 Presets and phone-frame work) plus a full read of the prior 68-message chat. This replaces memory of "what Proofline does" with ground truth — use it instead of re-describing the app from scratch in the new chat.*
+*Rewritten 2026-10-12 against the actual `proofline-mockup-studio.jsx` (3,263 lines). The previous version (2026-09-27) described a 2,556-line file and was stale: it listed features as "not built" that already existed. Treat this file as ground truth; update it in the same turn as any code change.*
 
 ---
 
 ## 0. How to use this document
 
-1. Start the new chat by attaching **this file** plus the current `proofline-mockup-studio.jsx` (and `proofline-app.zip` if you're touching the standalone build).
-2. Use the **Kickoff message** in §8 as your first message, edited to describe the one thing you want next.
-3. Whatever gets built next should update §3 (issues) and §4 (state schema) the same day it changes, not "eventually" — that's the rule that was missing before.
+1. Start a new chat by attaching **this file** plus the current `proofline-mockup-studio.jsx` and the `tests/` folder.
+2. Run `npm install && npm test` first. It must be green before anything is called "done".
+3. Whatever gets built next updates §3 (issues), §4 (state schema) and §6 (tests) the same day.
+4. **Keep the project copy of the .jsx in sync.** The stale project copy is how this spec drifted from the code.
 
 ---
 
 ## 1. Purpose & what "done" means
 
-**Proofline** is a client-side React + Canvas app that frames screenshots inside realistic device bezels for App Store / marketing use. No server, no upload — everything runs in the browser. It exists as a single self-contained `.jsx` file (required for Claude.ai artifact compatibility) and as a standalone HTML/JS/CSS bundle.
+**Proofline** is a client-side React + Canvas app that frames screenshots inside device bezels for App Store / marketing use. No server, no upload. One self-contained `.jsx` (Claude.ai artifact compatible), plus an optional standalone bundle.
 
-The last two real requests in the prior chat, still open:
-- ~~**A "Presets" tab**~~ — **delivered 2026-09-27** (Section 00). Saves/applies a named combination of ratio, orientation, tilt, device type/color, layout mode, background settings, status bar, caption style, device size, and export scale. Never captures slides, photos, per-slide zoom/pan, or the Unsplash key.
-- **A more realistic phone frame** — **procedural pass landed 2026-09-27, awaiting your sign-off**: thinner bezel with brighter rim line, shaded raised side buttons, and a subtle screen-glass sheen (all inside `drawPhoneFrame`; other device types verified byte-identical). It is a better *illustration*, not a photograph — true photorealism would mean compositing onto licensed device-photo templates, a separate and much larger effort.
+"Done" = the stated acceptance criterion is met **and** `npm test` is green **and** the relevant §6 manual rows pass.
 
-Going forward, "done" means: the specific acceptance criterion stated for that request is met, **and** the relevant rows of the §6 checklist pass. Not "I think I finished." See §7 for the reporting format that replaces "did you finish?"
+Open request: **"4:5 top / 4:5 bottom" ratios** (see §3, O1) — needs a definition from the owner before it can be built.
 
 ---
 
-## 2. Current feature inventory (ground truth from the code)
+## 2. Feature inventory (ground truth from the code)
 
-**Source** — multi-file add (picker or drag/drop), JPG/PNG native, HEIC via an injected `heicConverter` callback (not decodable in the plain artifact preview without it — the standalone build wires up `heic2any`). Thumbnail strip with reorder, duplicate, remove, add-more. "Clear saved project."
-
-**Device** — Phone, Tablet, Watch, Laptop, Browser frames (5 types, each with its own draw function).
-
-**Frame** — 7 export ratios (9:16, 4:5, 1:1, 3:4, 2:3, 4:3, 16:9); portrait/landscape (phone & tablet only — watch/laptop/browser are orientation-locked); 6 device body colors; tilt −15°…15°.
-
-**Zoom** *(two distinct controls, one section — see §3)*:
-- "Device size" — how large the device frame sits in the canvas (50–100%, a padding factor).
-- "Screenshot zoom" — zoom on the photo inside the frame (1×–2.5×), with drag-to-pan and "Apply to all" / "Reset."
-
-**Presets** *(Section 00)* — name + Save; saved presets listed with Apply and delete; same-name save overwrites; blank names ignored; persisted under `proofline:presets`; **Apply never switches to an Image/Unsplash background when no photo is loaded** (presets don't store photos, so switching would just show the default gradient) — every other saved setting still applies; malformed stored presets are ignored on load; exported helpers `PRESET_FIELDS` / `presetSettingsFromState` (covered by `presets-logic.test.mjs`).
-
-**Layout** — Single / Fan (offset 2-device stack) / Side-by-side, with a slide-pairing picker.
-
-**Background** — three source modes: **Color** (none → transparent PNG; solid, 7 presets + custom; gradient, 9 presets + custom), **Image** (own upload), **Unsplash** (search, needs the viewer's own free API key). Brightness (50–150%) and blur (0–20px) apply to Image/Unsplash backdrops.
-
-**Status bar** — off / light / dark (phone & tablet only).
-
-**Caption** — headline + subheadline, position top/bottom/left/right, light/dark text, 4 font choices.
-
-**Export** — 1×/2×/3× scale; single PNG; ZIP of all slides; ZIP of all ratios × all slides; animated WebM (Ken-Burns pan for one slide, crossfade slideshow for multiple) via `MediaRecorder` + `canvas.captureStream`.
-
-**Persistence** — debounced (900ms) autosave to `window.storage` (artifact) with a `localStorage` fallback (standalone), restoring slides, all settings, and the background image on reload.
+- **Source** — multi-file add (picker/drag-drop), JPG/PNG native, HEIC via injected `heicConverter`. Thumbnail strip: reorder, duplicate, remove, add. "Clear saved project".
+- **Undo / redo** — header buttons + Ctrl/⌘+Z, Ctrl/⌘+Shift+Z / Y. Snapshots slides + every `PRESET_FIELDS` setting + background image; 400 ms debounce; 50-step cap; ignores active-slide browsing; skipped while typing in text fields.
+- **Presets** (§00) — save/apply/delete named looks (`PRESET_FIELDS`, 27 fields). Never stores slides, photos, per-slide zoom/pan or the Unsplash key. Apply won't switch to Image/Unsplash with no photo loaded.
+- **Device** — Phone, Tablet, Watch, Laptop, Browser. **Per-slide override** of device type and colour via the "All slides / This slide only" toggle; thumbnails show a `dev` badge; "Reset all to global". Phone **screen cutout**: Island / Notch / Punch-hole / Clean.
+- **Frame** — 7 social ratios; **App Store sizes** (iPhone 6.9″ 1320×2868, 6.5″ 1284×2778, iPad 13″ 2064×2752 — exact pixels, always 1×; verify against Apple's current spec); portrait/landscape (phone & tablet); 6 body colours; tilt ±15°; **preview guides** (Off / Social UI / Safe area — DOM overlay, never exported).
+- **Device size** (§04) and **Screenshot zoom** (§05) are separate sections. Zoom has drag-to-pan, Apply to all, Reset.
+- **Effects** (§06) — shadow strength 0–200 %, floor reflection.
+- **Layout** — Single / Fan / Side-by-side with a pairing picker.
+- **Background** — Color (none = transparent, solid, gradient, custom), Image upload, Unsplash (user's own key); brightness/blur for photos.
+- **Status bar** — off / light / dark (phone & tablet).
+- **Caption** — headline/subheadline, 4 positions, light/dark text, 4 fonts, **highlight** words with `*stars*` as colour or pill (own colour picker), **batch captions** (one line per slide, `Headline | Subheadline`).
+- **Export** — PNG / JPG / WebP (quality slider; JPG flattens onto white), 1×/2×/3× (locked to 1× for App Store sizes), single image, ZIP of all slides, ZIP of all sizes, animated WebM.
+- **Persistence** — debounced (900 ms) autosave to `window.storage` / `localStorage`; images written once and deleted when their slide is removed; header shows `saving… / saved / not saved` (red when storage is full or blocked).
 
 ---
 
-## 3. Known-issues watchlist
+## 3. Issues
 
-These are the specific, evidenced patterns from the last chat — not generic advice.
+### Fixed 2026-10-12 (each has a regression test)
+1. **2×/3× exports had a thinner shadow than the preview.** `shadowBlur`/`shadowOffset` ignore the canvas transform, so `ctx.scale(2|3)` didn't scale them. Fixed in `drawDeviceShadow` by multiplying by the CTM scale. (Measured in Chromium: shadow reached ~60 px at 1× but ~16 px at 3×.)
+2. **Backdrop blur was 2–3× weaker in exports** — same cause (`ctx.filter` lengths ignore the transform). Fixed in `renderMockup`. (Mean pixel difference 1× vs 2×: 33.6 → 1.6.)
+3. **Tilted devices had a sideways-skewed shadow.** The old "counter-rotation" compensated for a transform that doesn't apply to shadow offsets. Offset is now always straight down.
+4. **Unsplash background broke exports after a reload.** The saved URL was reloaded without `crossOrigin`, tainting the canvas; every export then failed silently. It is now reloaded with CORS; if that fails the user is told and the gradient is used. Attribution is persisted (`bgAttribution`) so the Unsplash credit survives reload.
+5. **Storage filled up silently.** Every save rewrote every image data-URL and removed slides' images were never deleted, so the ~5 MB quota was eventually hit and slides vanished on reload. Images are now written once, deleted with their slide, and a failed write shows "not saved".
+6. **Export failures were silent** (unhandled promise rejections). All export paths now show an error. WebP on Safari (which silently returns PNG) is named `.png`.
 
-1. **The recurring "zoom is broken" reports were probably two different bugs treated as one.** "Device size" and "Screenshot zoom" are two separate state variables (`padding`, `activeSlide.zoom`) sitting under one "Zoom" section label. When a fix targeted one, a report that actually meant the other would still read as "still broken." One root cause *is* documented in the code itself — `computePhoneRect` (line ~502) has a comment explaining that `padding` used to be silently capped by whichever canvas dimension was tighter, so the slider had no visible effect across part of its range; that's fixed now, but there's no regression test guarding it. Treat §6's zoom rows as mandatory after *any* layout-adjacent change, and if "zoom" is reported broken again, ask **which** slider before touching code.
-2. **Background/backdrop state churned for ~5 messages** (`backdropSource`, `colorMode`, `gradientIdx`, `customGradient`, `solidIdx`, `customSolidColor`) before landing on its current clean 3-way shape (Color/Image/Unsplash). It's fine now — but nothing marked it as final, so don't re-litigate this shape without a reason; extend it instead (see §5).
-3. **No regression tests shipped.** The `render-test.mjs` / `-2` / `-3` / `backdrop-test.mjs` / `final-combo-test.mjs` scripts built during development were one-off container scripts, never saved as a reusable suite. §6 is meant to replace that pattern with one fixed list.
-4. ~~Never delivered: the Presets tab~~ — delivered 2026-09-27, with automated tests. `presets-ui.test.mjs` mounts the real component under jsdom with real `localStorage` and covers save, blank name, same-name overwrite, Apply (every one of the 20 captured fields, observed via the autosaved manifest), delete, reload persistence, older-preset compatibility, and corrupt-storage tolerance (`mutate.py` / `mutate-all-fields.py` confirm each behavior and each field is guarded). **Still not covered:** a real browser — actual `window.storage` in the artifact runtime, canvas drawing, and layout. The Presets code was originally written before these tests existed; the tests were added afterward and validated by failing against the pre-Presets file and by mutation.
-5. **Worth confirming, not assuming:** the original ask included "4:5 top" and "4:5 bottom" ratio presets; only a single `4:5` exists today. If this still matters, it needs to be asked for explicitly with a definition of what "top/bottom" anchoring means for the crop.
-6. **The multi-file split-and-reassemble attempt** (engine.jsx + ui-part1.jsx stitched via shell `cat`/`sed`) produced a working file eventually, but only after compiling the *combined* output at the end rather than each piece — see §5 for the replacement rule.
+### Still open
+O1. **"4:5 top" / "4:5 bottom"** from the original request: only a single `4:5` exists. Needs a definition of what top/bottom anchoring means for the crop.
+O2. **Fan / side-by-side use the primary slide's device and colour for both devices** (the paired slide's override is ignored).
+O3. **Reflection allocates two full-canvas buffers per device per render**; heavy with reflection on during WebM export.
+O4. **Safe-area guide percentages are approximate** (5 % inset; social 14 % top / 20 % bottom), not Apple's/Instagram's published numbers.
+O5. **Not tested:** real `window.storage` in the Claude.ai artifact runtime, HEIC conversion, Unsplash network search, WebM recording output, Safari/Firefox rendering.
 
 ---
 
-## 4. State schema (single source of truth)
-
-This is the entire component's state, current as of the attached file. Update this block, not just the code, whenever a variable is added, renamed, or repurposed.
+## 4. State schema
 
 ```js
-// --- persisted per-project (survives reload via storage) ---
-slides            // [{ id, img, title, subtitle, zoom, panX, panY, pairId }]
-activeIdx         // index into slides
-ratioId           // one of RATIOS ids: "9:16" | "4:5" | "1:1" | "3:4" | "2:3" | "4:3" | "16:9"
-orientation       // "portrait" | "landscape"
-tilt              // -15..15 (degrees)
-deviceTypeId      // "phone" | "tablet" | "watch" | "laptop" | "browser"
-multiLayout       // "single" | "fan" | "side-by-side"
-backdropSource    // "color" | "image" | "unsplash"
-colorMode         // "none" | "solid" | "gradient" — only meaningful when backdropSource === "color"
-gradientIdx       // index into BACKDROPS, or -1 for custom
-customGradient    // [hex, hex]
-solidIdx          // index into SOLID_COLORS, or -1 for custom
-customSolidColor  // hex
-bgImage           // { img, src, attribution? } | null — used for both "image" and "unsplash" sources
-unsplashKey       // saved API key (persisted)
-backdropBrightness// 50..150
-backdropBlur      // 0..20 (px)
-deviceColorId     // key into DEVICE_COLORS
-statusBar         // "off" | "light" | "dark"
-captionColor      // "light" | "dark"
-captionPosition   // "top" | "bottom" | "left" | "right"
-fontId            // key into FONT_CHOICES
-padding           // 0.5..1 — "Device size" slider
-exportScale       // 1 | 2 | 3
+// --- persisted per project (manifest version 2) ---
+slides            // [{ id, img, title, subtitle, zoom, panX, panY, pairId, deviceTypeId|null, deviceColorId|null }]
+ratioId           // RATIOS id or STORE_SIZES id ("iphone-6.9" | "iphone-6.5" | "ipad-13")
+orientation, tilt, deviceTypeId, deviceColorId, multiLayout
+backdropSource, colorMode, gradientIdx, customGradient, solidIdx, customSolidColor
+bgImage           // { img, src, attribution? } | null   (manifest: hasBgImage, bgAttribution)
+unsplashKey       // persisted, NOT in presets/undo
+backdropBrightness, backdropBlur
+statusBar, captionColor, captionPosition, captionAccent, accentStyle ("color"|"pill"), fontId
+phoneStyle        // "island" | "notch" | "punch" | "none"
+shadowStrength    // 0..200
+reflection        // boolean
+padding           // 0.5..1  ("Device size")
+exportScale       // 1|2|3   (ignored for exact App Store sizes)
+exportFormat      // "png" | "jpg" | "webp"
+exportQuality     // 50..100
+presets           // [{ id, name, settings }] under "proofline:presets"
 
-presets           // [{ id, name, settings }] — persisted separately under "proofline:presets"; settings = PRESET_FIELDS subset
+// PRESET_FIELDS = all of the above except slides/bgImage/unsplashKey (27 fields)
+// SNAPSHOT_FIELDS = PRESET_FIELDS + slides + bgImage  (undo/redo)
 
-// --- session-only (not persisted) ---
-presetNameDraft
-unsplashKeyDraft, unsplashQuery, unsplashResults, unsplashLoading, unsplashError
-isDragging, isPanning, isZipping, isExportingVideo, videoProgress
-fileError, saveStatus ("idle"|"saving"|"saved"), hydrated
-
-// --- derived (not state, computed each render) ---
-activeSlide, ratioObj, deviceInfo, isTransparent, colors, backdropImg, fontStack, secondarySlide
+// --- session-only ---
+activeIdx, deviceScope ("all"|"slide"), guides ("off"|"social"|"store"), captionBatch,
+presetNameDraft, unsplash* drafts/results, isDragging, isPanning, isZipping, isExportingVideo,
+videoProgress, fileError, saveStatus ("idle"|"saving"|"saved"|"error"), hydrated, histVersion
+// refs: histRef, savedImagesRef (ids already in storage), savedBgSrcRef
 ```
 
-**Render engine input** (`renderMockup(ctx, w, h, opts)` — pure function, no React):
-```js
-{ slide, secondarySlide, multiLayout, colors, transparent, backdropImage,
-  backdropBrightness, backdropBlur, deviceScheme, deviceTypeId, statusBarStyle,
-  captionColor, captionPosition, fontStack, paddingFactor, orientation, tiltDegrees }
-```
+**Storage keys:** `proofline:manifest`, `proofline:image:<slideId>`, `proofline:bgimage`, `proofline:presets`.
+
+**Render engine input** (`renderMockup(ctx, w, h, opts)`, pure, no React): `slide, secondarySlide, multiLayout, colors, transparent, backdropImage, backdropBrightness, backdropBlur, deviceScheme, deviceTypeId, statusBarStyle, captionColor, captionPosition, captionAccent, accentStyle, fontStack, paddingFactor, orientation, tiltDegrees, phoneStyle, shadowStrength, reflection, createCanvas`.
+
+**Canvas rule:** anything the engine draws with `shadowBlur`, `shadowOffset*` or `ctx.filter` must be multiplied by the CTM scale by hand — those ignore `ctx.scale()`.
 
 ---
 
 ## 5. File architecture rule
 
-- **Stay single-file.** The artifact constraint requires it, and the file is already organized into clear, marked regions (rendering engine → zip/storage utilities → the `ProoflineStudio` component: state → effects → handlers → JSX sections 01–09). Keep new code in the region it belongs to.
-- **Never split the file into pieces and reassemble with shell commands again.** The engine.jsx/ui-part1.jsx `cat`/`sed` approach (message 25–27 of the last chat) only gets compile-checked *after* the stitch, so errors surface late and are harder to localize. Edit the single file directly with `str_replace`, and run an `esbuild` syntax check after each functional change, not after a batch of them.
-- **New constants** (a device type, a ratio, a color) go in the existing top-of-file constant blocks (`DEVICE_TYPES`, `RATIOS`, `SOLID_COLORS`, `BACKDROPS`, `DEVICE_COLORS`, `FONT_CHOICES`) — never inline in JSX.
-- **New state** gets added to §4 in the same turn it's added to the code.
+- Stay single-file (artifact constraint). Regions: engine → zip/storage → `ProoflineStudio` (state → effects → handlers → JSX sections 00–11).
+- Edit the single file directly; run `npm run build` after each functional change.
+- New constants go in the top-of-file blocks; new state is added to §4 in the same turn.
+- Per-slide data that affects rendering must be resolved from the slide being rendered (`resolveSlideDevice`, `pairedSlideFor`), never from the active slide — exports render other slides.
 
 ---
 
-## 6. Test checklist — run the relevant rows before any "this is done" claim
+## 6. Tests
 
-**Automated first:** `npx esbuild proofline-mockup-studio.jsx --format=esm --outfile=studio.built.mjs && node --test` (needs `npm install --no-save esbuild react react-dom lucide-react canvas jsdom`). Must be green before any manual row below counts.
+**Automated** (`npm install && npm test`; needs the Chromium that Playwright ships, or `CHROMIUM=/path/to/chrome`):
 
-Not every row applies to every change — run the ones the change could plausibly affect, and say which ones you ran (§7).
+| File | Covers |
+|---|---|
+| `tests/logic.test.mjs` | Device-size scaling across 50–100 % for every ratio/orientation; device always fits every frame; App Store sizes exact; undo/redo history (dedupe, branch cut, cap); per-slide device resolution; pairing; `*highlight*` parsing; batch captions; presets capture exactly `PRESET_FIELDS`; HEIC detection; ZIP validity |
+| `tests/engine.browser.test.mjs` | Real Chromium: 2×/3× output matches 1× (shadow, tilt, landscape, blur); shadow distance equal at 1/2/3×; tilted shadow symmetric; screenshot zoom 1/1.5/2.5× × pan extremes leaves no gaps; every device × orientation × layout × frame renders; highlight colour/pill; reflection |
+| `tests/app.browser.test.mjs` | The real React app: separate Device size / Screenshot zoom sections; undo/redo; per-slide override; storage cleanup + "Clear saved project"; reload restore; guides overlay; App Store export is exactly 1320×2868; failed Unsplash restore is reported and export still works |
 
-- [ ] Screenshot zoom at 1.0×, 1.5×, 2.5× — image covers the frame with no gaps at each
-- [ ] Drag-to-pan at zoom > 1, checked with caption position = top, bottom, left, and right
-- [ ] "Apply to all" and "Reset" with 2+ slides loaded
-- [ ] Device-size slider across its full 50–100% range, portrait and landscape
-- [ ] Each device type (phone/tablet/watch/laptop/browser) renders with no clipping or overflow
-- [ ] Orientation toggle on phone and tablet, with a caption set on a side position (left/right column width depends on orientation)
-- [ ] Fan layout and side-by-side layout with 2 real screenshots, including the pairing picker
-- [ ] Background: transparent (none), solid + custom color picker, gradient + custom gradient, own image upload, Unsplash search + select (with and without a saved key, and with a rejected/invalid key)
-- [ ] Backdrop brightness and blur sliders, with an Image or Unsplash backdrop active
-- [ ] Caption in all 4 positions × both text colors × all 4 fonts × (headline only / subheadline only / both / neither)
-- [ ] HEIC upload — note in the report whether `heicConverter` was available in that environment
-- [ ] Export: single PNG, ZIP of all slides, ZIP of all ratios, animated WebM with 1 slide, animated WebM with 3+ slides
-- [ ] Reload and confirm slides + every setting + background image restore correctly
-- [ ] "Clear saved project" actually empties storage and resets the UI
+Validated by running against the pre-fix file: the shadow/blur and storage/restore tests fail there and pass now.
 
----
-
-## 7. Session protocol (how requests and reports work from here)
-
-- **One scoped thing per request, with a stated acceptance criterion.** Not "add more features" or "add them all" — e.g. "Add a Presets tab: a named preset saves ratio + device + background + caption settings (not slides/photos), and selecting one applies all of them." If a request bundles more than one independent feature, it gets named as multiple and done one at a time.
-- **Every reply that finishes a change reports:** what changed, which §6 rows were run and their result (pass/fail/not-applicable), and anything left uncertain. That report is the answer to "did you finish?" — it shouldn't need re-asking.
-- **Any rename or reshape of state gets flagged and §4 gets updated the same turn** — no more silent drift that later needs a `grep` hunt to reconstruct.
-- **A bug report gets one clarifying question when it could mean either of two controls** (see §3, item 1) before a fix is attempted.
+**Manual rows still worth a look before release** (not automated):
+- [ ] Drag-to-pan feel with caption top/bottom/left/right
+- [ ] Unsplash search + select with a valid key; invalid key message
+- [ ] HEIC upload (note whether `heicConverter` was available)
+- [ ] Animated WebM with 1 slide and with 3+ slides
+- [ ] Reload inside the real Claude.ai artifact (`window.storage`)
+- [ ] Visual check of the 4 phone cutouts and reflection on a light backdrop
 
 ---
 
-## 8. Kickoff message for the new chat
+## 7. Session protocol
 
-> I'm continuing development on **Proofline**, a React + Canvas iPhone/device mockup generator. Attached: the current `proofline-mockup-studio.jsx` [and `proofline-app.zip`], plus `proofline-spec-and-test-plan.md` — please read the spec first; it has the full feature list, known issues, state schema, and the test checklist to run before calling anything "done." Here's what I want next: **[one scoped feature or fix, with what "done" looks like]**.
+- One scoped thing per request with an acceptance criterion.
+- Every reply that finishes a change reports: what changed, which tests ran and their result, anything uncertain.
+- Any rename/reshape of state is flagged and §4 updated the same turn.
+- A "zoom is broken" report gets one clarifying question first: **Device size** (§04) or **Screenshot zoom** (§05)?
+- **Always attach the current .jsx** — never rely on the project copy being current.
+
+---
+
+## 8. Kickoff message for the next chat
+
+> I'm continuing development on **Proofline**. Attached: the current `proofline-mockup-studio.jsx`, the `tests/` folder, and `proofline-spec-and-test-plan.md` — read the spec first. Run `npm install && npm test` before and after any change. Here's what I want next: **[one scoped feature or fix, with what "done" looks like]**.
