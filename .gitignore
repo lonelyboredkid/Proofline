@@ -4,3 +4,4 @@ renders/
 *.png
 before-*.jsx
 original-upload.jsx
+tests/*.iife.js

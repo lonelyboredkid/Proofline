@@ -8,6 +8,8 @@ const fakeState = {
   solidIdx: -1, customSolidColor: "#abcdef", backdropBrightness: 120,
   backdropBlur: 4, statusBar: "dark", captionColor: "dark",
   captionPosition: "left", fontId: "mono", padding: 0.7, exportScale: 3,
+  phoneStyle: "notch", shadowStrength: 150, reflection: true, captionAccent: "#ff8800",
+  accentStyle: "pill", exportFormat: "webp", exportQuality: 80,
   slides: [{ id: "x" }], bgImage: { src: "data:fake" }, unsplashKey: "secret",
 };
 
