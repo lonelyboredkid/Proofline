@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { Upload, Download, Plus, X, Palette, Image as ImageIcon, Copy, ChevronLeft, ChevronRight, Film, Save } from "lucide-react";
+import { Upload, Download, Plus, X, Palette, Image as ImageIcon, Copy, ChevronLeft, ChevronRight, Film, Save, Undo2, Redo2 } from "lucide-react";
 
 /* ============================================================
    PROOFLINE — RENDERING ENGINE
@@ -27,6 +27,21 @@ export const RATIOS = [
   { id: "4:3", w: 1440, h: 1080 },
   { id: "16:9", w: 1920, h: 1080 },
 ];
+
+// Exact App Store Connect screenshot sizes. These always export at 1x so the
+// pixel dimensions match what the store expects. Verify against Apple's current
+// "Screenshot specifications" page — required sizes change with new devices.
+export const STORE_SIZES = [
+  { id: "iphone-6.9", label: "iPhone 6.9″", w: 1320, h: 2868, exact: true },
+  { id: "iphone-6.5", label: "iPhone 6.5″", w: 1284, h: 2778, exact: true },
+  { id: "ipad-13", label: "iPad 13″", w: 2064, h: 2752, exact: true },
+];
+
+export const ALL_FRAMES = [...RATIOS, ...STORE_SIZES];
+
+export function frameTag(id) {
+  return String(id).replace(":", "x").replace(/[^a-zA-Z0-9.]+/g, "-");
+}
 
 export const SOLID_COLORS = [
   { name: "Mint", color: "#3DBD8C" },
@@ -66,17 +81,107 @@ export const FONT_CHOICES = {
   rounded: { name: "Rounded", stack: "ui-rounded, system-ui, sans-serif" },
 };
 
+export const PHONE_STYLES = {
+  island: { name: "Island" },
+  notch: { name: "Notch" },
+  punch: { name: "Punch-hole" },
+  none: { name: "Clean" },
+};
+
+export const EXPORT_FORMATS = {
+  png: { name: "PNG", mime: "image/png", ext: "png", lossy: false },
+  jpg: { name: "JPG", mime: "image/jpeg", ext: "jpg", lossy: true },
+  webp: { name: "WebP", mime: "image/webp", ext: "webp", lossy: true },
+};
+
 export const PRESET_FIELDS = [
   "ratioId", "orientation", "tilt", "deviceTypeId", "deviceColorId",
   "multiLayout", "backdropSource", "colorMode", "gradientIdx", "customGradient",
   "solidIdx", "customSolidColor", "backdropBrightness", "backdropBlur",
   "statusBar", "captionColor", "captionPosition", "fontId", "padding", "exportScale",
+  "phoneStyle", "shadowStrength", "reflection", "captionAccent", "accentStyle",
+  "exportFormat", "exportQuality",
 ];
 
 export function presetSettingsFromState(state) {
   const out = {};
   for (const key of PRESET_FIELDS) out[key] = state[key];
   return out;
+}
+
+/* ---------- undo / redo (pure history helpers) ---------- */
+
+// activeIdx is deliberately NOT part of a snapshot: browsing between slides
+// should not create undo steps.
+export const SNAPSHOT_FIELDS = [...PRESET_FIELDS, "slides", "bgImage"];
+
+export function snapshotsEqual(a, b) {
+  if (!a || !b) return false;
+  for (const k of SNAPSHOT_FIELDS) if (a[k] !== b[k]) return false;
+  return true;
+}
+
+export function historyPush(h, snap, cap = 50) {
+  if (snapshotsEqual(h.stack[h.idx], snap)) return h;
+  const stack = h.stack.slice(0, h.idx + 1);
+  stack.push(snap);
+  const trimmed = stack.length > cap ? stack.slice(stack.length - cap) : stack;
+  return { stack: trimmed, idx: trimmed.length - 1 };
+}
+
+export function historyUndo(h) {
+  return h.idx > 0 ? { stack: h.stack, idx: h.idx - 1 } : h;
+}
+
+export function historyRedo(h) {
+  return h.idx < h.stack.length - 1 ? { stack: h.stack, idx: h.idx + 1 } : h;
+}
+
+/* ---------- per-slide device override + pairing (pure) ---------- */
+
+export function resolveSlideDevice(slide, globalTypeId, globalColorId) {
+  const t = slide && slide.deviceTypeId && DEVICE_TYPES[slide.deviceTypeId] ? slide.deviceTypeId : globalTypeId;
+  const c = slide && slide.deviceColorId && DEVICE_COLORS[slide.deviceColorId] ? slide.deviceColorId : globalColorId;
+  return { deviceTypeId: t, deviceColorId: c };
+}
+
+export function pairedSlideFor(slide, slides, multiLayout) {
+  if (multiLayout === "single" || !slide || !slide.pairId) return null;
+  return slides.find((s) => s.id === slide.pairId) || null;
+}
+
+/* ---------- caption helpers (pure) ---------- */
+
+// "Get *started* today" -> words with a highlight flag. Highlights are whole
+// words; an unmatched trailing "*" is treated as plain text.
+export function parseRichWords(text) {
+  const segs = String(text || "").split("*");
+  const out = [];
+  segs.forEach((seg, i) => {
+    const hl = i % 2 === 1 && !(i === segs.length - 1 && segs.length % 2 === 0);
+    seg.split(/\s+/).filter(Boolean).forEach((t) => out.push({ t, hl }));
+  });
+  return out;
+}
+
+// One line per slide, "Headline | Subheadline". A blank line leaves that slide untouched.
+export function parseCaptionLines(text) {
+  return String(text || "")
+    .split(/\r?\n/)
+    .map((line) => {
+      if (!line.trim()) return null;
+      const i = line.indexOf("|");
+      if (i === -1) return { title: line.trim(), subtitle: undefined };
+      return { title: line.slice(0, i).trim(), subtitle: line.slice(i + 1).trim() };
+    });
+}
+
+export function applyCaptionLines(slides, lines) {
+  return slides.map((s, i) => {
+    const c = lines[i];
+    if (!c) return s;
+    return { ...s, title: c.title, ...(c.subtitle !== undefined ? { subtitle: c.subtitle } : {}) };
+  });
 }
 
 export function isHeicFile(file) {
@@ -130,21 +235,49 @@ function drawImageCover(ctx, img, x, y, w, h, zoom, panX, panY) {
   ctx.restore();
 }
 
-function measureLines(ctx, text, maxWidth) {
-  const words = text.split(" ");
-  let line = "";
+// Wraps highlight-aware words into lines. Each word carries its own measured
+// width (plus pill padding when highlighted in pill style).
+function layoutRich(ctx, words, maxWidth, pad) {
+  const space = ctx.measureText(" ").width;
   const lines = [];
-  for (const word of words) {
-    const test = line ? line + " " + word : word;
-    if (ctx.measureText(test).width > maxWidth && line) {
-      lines.push(line);
-      line = word;
+  let cur = { words: [], width: 0 };
+  for (const wd of words) {
+    const ww = ctx.measureText(wd.t).width + (wd.hl ? pad * 2 : 0);
+    const next = cur.words.length ? cur.width + space + ww : ww;
+    if (next > maxWidth && cur.words.length) {
+      lines.push(cur);
+      cur = { words: [{ ...wd, w: ww }], width: ww };
     } else {
-      line = test;
+      cur.words.push({ ...wd, w: ww });
+      cur.width = next;
     }
   }
-  if (line) lines.push(line);
+  if (cur.words.length) lines.push(cur);
   return lines;
+}
+
+function drawRichLines(ctx, lines, cx, y0, lineH, fontSize, color, accent, style, pad) {
+  const space = ctx.measureText(" ").width;
+  ctx.textAlign = "left";
+  const pillText = hexLuma(accent) > 0.6 ? "#15181C" : "#FFFFFF";
+  lines.forEach((line, i) => {
+    const y = y0 + i * lineH;
+    let x = cx - line.width / 2;
+    for (const wd of line.words) {
+      if (wd.hl && style === "pill") {
+        roundRectPath(ctx, x, y - fontSize * 0.82, wd.w, fontSize * 1.05, fontSize * 0.3);
+        ctx.fillStyle = accent;
+        ctx.fill();
+        ctx.fillStyle = pillText;
+        ctx.fillText(wd.t, x + pad, y);
+      } else {
+        ctx.fillStyle = wd.hl ? accent : color;
+        ctx.fillText(wd.t, x, y);
+      }
+      x += wd.w + space;
+    }
+  });
+  ctx.textAlign = "center";
 }
 
 /* ---------- iOS-style status bar (phone + tablet) ---------- */
@@ -322,7 +455,48 @@ function drawCameraLens(ctx, cx, cy, r) {
   ctx.fill();
 }
 
-function drawPhoneFrame(ctx, rect, img, scheme, statusBarStyle, zoom, panX, panY) {
+// Top-of-screen cutout for the phone: Dynamic Island, classic notch, punch-hole, or none.
+function drawPhoneCutout(ctx, style, x, w, sy, sw) {
+  const cx = x + w / 2;
+  if (style === "none") return;
+  if (style === "punch") {
+    const r = sw * 0.021;
+    const cy = sy + sw * 0.05;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * 1.25, 0, Math.PI * 2);
+    ctx.fillStyle = "#000";
+    ctx.fill();
+    drawCameraLens(ctx, cx, cy, r * 0.7);
+    return;
+  }
+  if (style === "notch") {
+    const nW = sw * 0.46, nH = sw * 0.075, rad = nH * 0.55;
+    const nx = cx - nW / 2;
+    ctx.beginPath();
+    ctx.moveTo(nx, sy);
+    ctx.lineTo(nx + nW, sy);
+    ctx.lineTo(nx + nW, sy + nH - rad);
+    ctx.arcTo(nx + nW, sy + nH, nx + nW - rad, sy + nH, rad);
+    ctx.lineTo(nx + rad, sy + nH);
+    ctx.arcTo(nx, sy + nH, nx, sy + nH - rad, rad);
+    ctx.closePath();
+    ctx.fillStyle = "#000";
+    ctx.fill();
+    roundRectPath(ctx, cx - nW * 0.16, sy + nH * 0.38, nW * 0.32, nH * 0.18, nH * 0.09);
+    ctx.fillStyle = "#15151c";
+    ctx.fill();
+    drawCameraLens(ctx, cx + nW * 0.3, sy + nH * 0.46, nH * 0.13);
+    return;
+  }
+  const islW = sw * 0.27, islH = sw * 0.072;
+  const islX = cx - islW / 2, islY = sy + sw * 0.045;
+  roundRectPath(ctx, islX, islY, islW, islH, islH / 2);
+  ctx.fillStyle = "#000";
+  ctx.fill();
+  drawCameraLens(ctx, islX + islW - islH * 0.62, islY + islH / 2, islH * 0.24);
+}
+
+function drawPhoneFrame(ctx, rect, img, scheme, statusBarStyle, zoom, panX, panY, phoneStyle) {
   const { x, y, w, h } = rect;
   const outerR = w * 0.135;
   const bezel = w * 0.02;
@@ -345,12 +519,7 @@ function drawPhoneFrame(ctx, rect, img, scheme, statusBarStyle, zoom, panX, panY
   drawScreenGlare(ctx, sx, sy, sw, sh);
   ctx.restore();
 
-  const islW = sw * 0.27, islH = sw * 0.072;
-  const islX = x + w / 2 - islW / 2, islY = sy + sw * 0.045;
-  roundRectPath(ctx, islX, islY, islW, islH, islH / 2);
-  ctx.fillStyle = "#000";
-  ctx.fill();
-  drawCameraLens(ctx, islX + islW - islH * 0.62, islY + islH / 2, islH * 0.24);
+  drawPhoneCutout(ctx, phoneStyle || "island", x, w, sy, sw);
 
   const bw = Math.max(w * 0.016, 3);
   drawSideButton(ctx, x - bw, y + h * 0.108, bw, h * 0.038, scheme);
@@ -624,7 +793,7 @@ function drawBrowserFrame(ctx, rect, img, scheme, zoom, panX, panY) {
   ctx.stroke();
 }
 
-function drawDeviceFrame(ctx, rect, img, scheme, statusBarStyle, zoom, panX, panY, deviceTypeId) {
+function drawDeviceFrame(ctx, rect, img, scheme, statusBarStyle, zoom, panX, panY, deviceTypeId, phoneStyle) {
   switch (deviceTypeId) {
     case "tablet":
       return drawTabletFrame(ctx, rect, img, scheme, statusBarStyle, zoom, panX, panY);
@@ -635,37 +804,40 @@ function drawDeviceFrame(ctx, rect, img, scheme, statusBarStyle, zoom, panX, pan
     case "browser":
       return drawBrowserFrame(ctx, rect, img, scheme, zoom, panX, panY);
     default:
-      return drawPhoneFrame(ctx, rect, img, scheme, statusBarStyle, zoom, panX, panY);
+      return drawPhoneFrame(ctx, rect, img, scheme, statusBarStyle, zoom, panX, panY, phoneStyle);
   }
 }
 
-/* ---------- shadow + rotation (handles orientation swap AND arbitrary tilt) ---------- */
+/* ---------- shadow, reflection + rotation (handles orientation swap AND arbitrary tilt) ---------- */
 
-function drawDeviceShadow(ctx, rect, shapeW, shapeH, cornerRadius, angle) {
+function drawDeviceShadow(ctx, rect, shapeW, shapeH, cornerRadius, angle, strength) {
+  const k = strength === undefined ? 1 : strength;
+  if (k <= 0) return;
   const shortSide = Math.min(rect.w, rect.h);
+  // shadowBlur / shadowOffset* are NOT affected by the canvas transform (HTML spec,
+  // verified in Chromium), so the export's ctx.scale(2|3) must be applied by hand —
+  // otherwise 2×/3× exports get a thinner shadow than the 1× preview.
+  const m = ctx.getTransform ? ctx.getTransform() : null;
+  const s = m ? Math.hypot(m.a, m.b) || 1 : 1;
   // Two layers: a wide soft ambient shadow plus a tight contact shadow close to the body.
   const layers = [
-    { D: shortSide * 0.09, blur: shortSide * 0.16, color: "rgba(0,0,0,0.35)" },
-    { D: shortSide * 0.016, blur: shortSide * 0.03, color: "rgba(0,0,0,0.4)" },
+    { D: shortSide * 0.09 * k * s, blur: shortSide * 0.16 * k * s, a: 0.35 },
+    { D: shortSide * 0.016 * k * s, blur: shortSide * 0.03 * k * s, a: 0.4 },
   ];
-  for (const { D, blur, color } of layers) {
+  for (const { D, blur, a } of layers) {
     ctx.save();
-    ctx.shadowColor = color;
+    ctx.shadowColor = `rgba(0,0,0,${Math.min(1, a * k)})`;
     ctx.shadowBlur = blur;
+    // Offsets are in screen space, so the shadow falls straight down at any tilt.
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = D;
     if (angle) {
       const cx = rect.x + rect.w / 2;
       const cy = rect.y + rect.h / 2;
       ctx.translate(cx, cy);
       ctx.rotate(angle);
-      // Compensate so the shadow still falls straight down on screen, regardless
-      // of how the shape itself is rotated (shadow offsets are transformed by
-      // the current matrix same as everything else, so we counter-rotate here).
-      ctx.shadowOffsetX = D * Math.sin(angle);
-      ctx.shadowOffsetY = D * Math.cos(angle);
       roundRectPath(ctx, -shapeW / 2, -shapeH / 2, shapeW, shapeH, cornerRadius);
     } else {
-      ctx.shadowOffsetX = 0;
-      ctx.shadowOffsetY = D;
       const cx = rect.x + rect.w / 2;
       const cy = rect.y + rect.h / 2;
       roundRectPath(ctx, cx - shapeW / 2, cy - shapeH / 2, shapeW, shapeH, cornerRadius);
@@ -676,10 +848,50 @@ function drawDeviceShadow(ctx, rect, shapeW, shapeH, cornerRadius, angle) {
   }
 }
 
-// Draws one device (shadow + frame), handling orientation swap and tilt as a
-// single combined rotation. Reused by both the single-device and multi-device
-// (fan / side-by-side) layouts.
-function drawDeviceWithEffects(ctx, rect, extraTiltRad, orientation, deviceTypeId, img, zoom, panX, panY, deviceScheme, statusBarStyle) {
+// Floor reflection: paint the device to an offscreen canvas, mirror it about the
+// device's lowest point, fade it out, and composite it back. Needs a canvas
+// factory (document in the browser, or fx.createCanvas elsewhere).
+function drawReflection(ctx, paint, bottomY, fadeH, fx) {
+  const make =
+    fx.createCanvas ||
+    ((cw, ch) => {
+      if (typeof document === "undefined") return null;
+      const c = document.createElement("canvas");
+      c.width = cw;
+      c.height = ch;
+      return c;
+    });
+  const W = fx.canvasW, H = fx.canvasH;
+  if (fadeH <= 1 || bottomY >= H) return;
+  const sc = ctx.getTransform ? ctx.getTransform().a || 1 : 1;
+  const pw = Math.ceil(W * sc), ph = Math.ceil(H * sc);
+  const a = make(pw, ph);
+  const b = make(pw, ph);
+  if (!a || !b) return;
+  const actx = a.getContext("2d");
+  actx.scale(sc, sc);
+  paint(actx);
+  const bctx = b.getContext("2d");
+  bctx.scale(sc, sc);
+  bctx.save();
+  bctx.translate(0, 2 * bottomY);
+  bctx.scale(1, -1);
+  bctx.drawImage(a, 0, 0, W, H);
+  bctx.restore();
+  bctx.globalCompositeOperation = "destination-in";
+  const g = bctx.createLinearGradient(0, bottomY, 0, bottomY + fadeH);
+  g.addColorStop(0, "rgba(0,0,0,0.32)");
+  g.addColorStop(1, "rgba(0,0,0,0)");
+  bctx.fillStyle = g;
+  bctx.fillRect(0, bottomY, W, fadeH);
+  ctx.drawImage(b, 0, 0, W, H);
+}
+
+// Draws one device (shadow + reflection + frame), handling orientation swap and
+// tilt as a single combined rotation. Reused by the single-device and
+// multi-device (fan / side-by-side) layouts.
+function drawDeviceWithEffects(ctx, rect, extraTiltRad, orientation, deviceTypeId, img, zoom, panX, panY, deviceScheme, statusBarStyle, fx) {
+  const effects = fx || {};
   const info = DEVICE_TYPES[deviceTypeId] || DEVICE_TYPES.phone;
   const effectiveOrientation = info.allowOrientation ? orientation : "portrait";
   const baseAngle = effectiveOrientation === "landscape" ? -Math.PI / 2 : 0;
@@ -693,20 +905,31 @@ function drawDeviceWithEffects(ctx, rect, extraTiltRad, orientation, deviceTypeI
   const shadowH = isWatch ? shapeH * 0.74 : shapeH;
   const cornerRadius = isWatch ? shapeW * 0.24 : shortSide * 0.135;
 
-  drawDeviceShadow(ctx, rect, shapeW, shadowH, cornerRadius, totalAngle);
+  const paint = (c) => {
+    if (totalAngle !== 0) {
+      const cx = rect.x + rect.w / 2;
+      const cy = rect.y + rect.h / 2;
+      c.save();
+      c.translate(cx, cy);
+      c.rotate(totalAngle);
+      const localRect = { x: -shapeW / 2, y: -shapeH / 2, w: shapeW, h: shapeH };
+      drawDeviceFrame(c, localRect, img, deviceScheme, statusBarStyle, zoom, panX, panY, deviceTypeId, effects.phoneStyle);
+      c.restore();
+    } else {
+      drawDeviceFrame(c, rect, img, deviceScheme, statusBarStyle, zoom, panX, panY, deviceTypeId, effects.phoneStyle);
+    }
+  };
 
-  if (totalAngle !== 0) {
-    const cx = rect.x + rect.w / 2;
+  drawDeviceShadow(ctx, rect, shapeW, shadowH, cornerRadius, totalAngle, effects.shadowStrength);
+
+  if (effects.reflection && effects.canvasW && effects.canvasH) {
     const cy = rect.y + rect.h / 2;
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate(totalAngle);
-    const localRect = { x: -shapeW / 2, y: -shapeH / 2, w: shapeW, h: shapeH };
-    drawDeviceFrame(ctx, localRect, img, deviceScheme, statusBarStyle, zoom, panX, panY, deviceTypeId);
-    ctx.restore();
-  } else {
-    drawDeviceFrame(ctx, rect, img, deviceScheme, statusBarStyle, zoom, panX, panY, deviceTypeId);
+    const halfH = (Math.abs(shapeW * Math.sin(totalAngle)) + Math.abs(shapeH * Math.cos(totalAngle))) / 2;
+    const bottomY = cy + halfH;
+    drawReflection(ctx, paint, bottomY, Math.min(halfH * 0.7, effects.canvasH - bottomY), effects);
   }
+
+  paint(ctx);
 }
 
 /* ---------- layout: fitting one device into an available box ---------- */
@@ -825,27 +1048,31 @@ function drawSideScrim(ctx, w, h, side, isDarkText) {
   }
 }
 
-function drawCaption(ctx, w, h, title, subtitle, isDark, position, fontStack) {
+function drawCaption(ctx, w, h, title, subtitle, isDark, position, fontStack, accent, accentStyle) {
   const color = isDark ? "#15181C" : "#FFFFFF";
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
   const font = fontStack || "system-ui, sans-serif";
+  const acc = accent || "#FFD23F";
+  const pill = accentStyle === "pill";
 
   const titleSize = Math.round(w * 0.072);
   const titleLineH = w * 0.084;
   const subSize = Math.round(w * 0.038);
   const subLineH = w * 0.05;
   const blockGap = w * 0.045;
+  const titlePad = pill ? titleSize * 0.28 : 0;
+  const subPad = pill ? subSize * 0.28 : 0;
 
   let titleLines = [];
   if (title) {
     ctx.font = `700 ${titleSize}px ${font}`;
-    titleLines = measureLines(ctx, title, w * 0.86);
+    titleLines = layoutRich(ctx, parseRichWords(title), w * 0.86, titlePad);
   }
   let subtitleLines = [];
   if (subtitle) {
     ctx.font = `500 ${subSize}px ${font}`;
-    subtitleLines = measureLines(ctx, subtitle, w * 0.78);
+    subtitleLines = layoutRich(ctx, parseRichWords(subtitle), w * 0.78, subPad);
   }
 
   const titleBlockH = titleLines.length ? (titleLines.length - 1) * titleLineH : 0;
@@ -859,28 +1086,28 @@ function drawCaption(ctx, w, h, title, subtitle, isDark, position, fontStack) {
 
   if (titleLines.length) {
     ctx.font = `700 ${titleSize}px ${font}`;
-    ctx.fillStyle = color;
     ctx.globalAlpha = 1;
-    titleLines.forEach((l, i) => ctx.fillText(l, w / 2, cursorY + i * titleLineH));
+    drawRichLines(ctx, titleLines, w / 2, cursorY, titleLineH, titleSize, color, acc, accentStyle, titlePad);
     bottomY = cursorY + titleBlockH;
     cursorY = bottomY + blockGap;
   }
   if (subtitleLines.length) {
     ctx.font = `500 ${subSize}px ${font}`;
-    ctx.fillStyle = color;
     ctx.globalAlpha = 0.82;
-    subtitleLines.forEach((l, i) => ctx.fillText(l, w / 2, cursorY + i * subLineH));
+    drawRichLines(ctx, subtitleLines, w / 2, cursorY, subLineH, subSize, color, acc, accentStyle, subPad);
     bottomY = cursorY + subtitleBlockH;
     ctx.globalAlpha = 1;
   }
   return { top: startY, bottom: bottomY };
 }
 
-function drawCaptionSide(ctx, w, h, title, subtitle, isDark, side, fontStack) {
+function drawCaptionSide(ctx, w, h, title, subtitle, isDark, side, fontStack, accent, accentStyle) {
   const color = isDark ? "#15181C" : "#FFFFFF";
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
   const font = fontStack || "system-ui, sans-serif";
+  const acc = accent || "#FFD23F";
+  const pill = accentStyle === "pill";
 
   const columnW = w * 0.42;
   const cx = side === "left" ? columnW / 2 : w - columnW / 2;
@@ -891,16 +1118,18 @@ function drawCaptionSide(ctx, w, h, title, subtitle, isDark, side, fontStack) {
   const subSize = Math.round(columnW * 0.068);
   const subLineH = columnW * 0.09;
   const blockGap = columnW * 0.08;
+  const titlePad = pill ? titleSize * 0.28 : 0;
+  const subPad = pill ? subSize * 0.28 : 0;
 
   let titleLines = [];
   if (title) {
     ctx.font = `700 ${titleSize}px ${font}`;
-    titleLines = measureLines(ctx, title, maxTextWidth);
+    titleLines = layoutRich(ctx, parseRichWords(title), maxTextWidth, titlePad);
   }
   let subtitleLines = [];
   if (subtitle) {
     ctx.font = `500 ${subSize}px ${font}`;
-    subtitleLines = measureLines(ctx, subtitle, maxTextWidth);
+    subtitleLines = layoutRich(ctx, parseRichWords(subtitle), maxTextWidth, subPad);
   }
 
   const titleBlockH = titleLines.length ? (titleLines.length - 1) * titleLineH : 0;
@@ -912,16 +1141,14 @@ function drawCaptionSide(ctx, w, h, title, subtitle, isDark, side, fontStack) {
 
   if (titleLines.length) {
     ctx.font = `700 ${titleSize}px ${font}`;
-    ctx.fillStyle = color;
     ctx.globalAlpha = 1;
-    titleLines.forEach((l, i) => ctx.fillText(l, cx, cursorY + i * titleLineH));
+    drawRichLines(ctx, titleLines, cx, cursorY, titleLineH, titleSize, color, acc, accentStyle, titlePad);
     cursorY = cursorY + titleBlockH + blockGap;
   }
   if (subtitleLines.length) {
     ctx.font = `500 ${subSize}px ${font}`;
-    ctx.fillStyle = color;
     ctx.globalAlpha = 0.82;
-    subtitleLines.forEach((l, i) => ctx.fillText(l, cx, cursorY + i * subLineH));
+    drawRichLines(ctx, subtitleLines, cx, cursorY, subLineH, subSize, color, acc, accentStyle, subPad);
     ctx.globalAlpha = 1;
   }
   return columnW;
@@ -944,10 +1171,16 @@ export function renderMockup(ctx, w, h, opts) {
     statusBarStyle,
     captionColor,
     captionPosition,
+    captionAccent,
+    accentStyle,
     fontStack,
     paddingFactor,
     orientation,
     tiltDegrees,
+    phoneStyle,
+    shadowStrength,
+    reflection,
+    createCanvas,
   } = opts;
 
   ctx.clearRect(0, 0, w, h);
@@ -957,7 +1190,10 @@ export function renderMockup(ctx, w, h, opts) {
     const blur = backdropBlur || 0;
     const filterParts = [];
     if (brightness !== 100) filterParts.push(`brightness(${brightness}%)`);
-    if (blur > 0) filterParts.push(`blur(${blur}px)`);
+    // ctx.filter lengths ignore the canvas transform, so scale the radius by hand
+    // or a 2×/3× export blurs half/third as much as the preview.
+    const fs = ctx.getTransform ? Math.hypot(ctx.getTransform().a, ctx.getTransform().b) || 1 : 1;
+    if (blur > 0) filterParts.push(`blur(${blur * fs}px)`);
     ctx.save();
     if (filterParts.length && "filter" in ctx) ctx.filter = filterParts.join(" ");
     drawImageCover(ctx, backdropImage, 0, 0, w, h, 1, 0, 0);
@@ -978,12 +1214,12 @@ export function renderMockup(ctx, w, h, opts) {
   if (hasCaption) {
     if (isSide) {
       if (backdropImage) drawSideScrim(ctx, w, h, position, captionColor === "dark");
-      const columnW = drawCaptionSide(ctx, w, h, title, subtitle, captionColor === "dark", position, fontStack);
+      const columnW = drawCaptionSide(ctx, w, h, title, subtitle, captionColor === "dark", position, fontStack, captionAccent, accentStyle);
       if (position === "left") margins.left = columnW;
       else margins.right = columnW;
     } else {
       if (backdropImage) drawCaptionScrim(ctx, w, h, position, captionColor === "dark");
-      const capRect = drawCaption(ctx, w, h, title, subtitle, captionColor === "dark", position, fontStack);
+      const capRect = drawCaption(ctx, w, h, title, subtitle, captionColor === "dark", position, fontStack, captionAccent, accentStyle);
       if (position === "bottom") margins.bottom = Math.max(h * 0.22, h - capRect.top + h * 0.06);
       else margins.top = Math.max(h * 0.22, capRect.bottom + h * 0.06);
     }
@@ -996,6 +1232,14 @@ export function renderMockup(ctx, w, h, opts) {
     y: margins.top,
     w: w - margins.left - margins.right,
     h: h - margins.top - margins.bottom,
+  };
+  const fx = {
+    phoneStyle,
+    shadowStrength: shadowStrength === undefined || shadowStrength === null ? 1 : shadowStrength / 100,
+    reflection: Boolean(reflection),
+    createCanvas,
+    canvasW: w,
+    canvasH: h,
   };
 
   if ((multiLayout === "fan" || multiLayout === "side-by-side") && secondarySlide) {
@@ -1022,7 +1266,8 @@ export function renderMockup(ctx, w, h, opts) {
         panX,
         panY,
         deviceScheme,
-        statusBarStyle
+        statusBarStyle,
+        fx
       );
     });
     return;
@@ -1034,7 +1279,7 @@ export function renderMockup(ctx, w, h, opts) {
   const panX = slide && slide.panX ? slide.panX : 0;
   const panY = slide && slide.panY ? slide.panY : 0;
 
-  drawDeviceWithEffects(ctx, rect, tiltRad, orientation, deviceTypeId, img, zoom, panX, panY, deviceScheme, statusBarStyle);
+  drawDeviceWithEffects(ctx, rect, tiltRad, orientation, deviceTypeId, img, zoom, panX, panY, deviceScheme, statusBarStyle, fx);
 }
 
 /* ---------- zip export (STORED, no compression — self-contained, no deps) ---------- */
@@ -1222,13 +1467,10 @@ const CHECKER_STYLE = {
   backgroundPosition: "0 0, 0 8px, 8px -8px, -8px 0px",
 };
 
-const CHECKER_STYLE_SMALL = {
-  backgroundImage:
-    "linear-gradient(45deg, #999 25%, transparent 25%), linear-gradient(-45deg, #999 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #999 75%), linear-gradient(-45deg, transparent 75%, #999 75%)",
-  backgroundSize: "8px 8px",
-  backgroundPosition: "0 0, 0 4px, 4px -4px, -4px 0px",
-  backgroundColor: "#fff",
-};
+const optBtn = (active) =>
+  `py-2 rounded-md text-xs border transition-colors ${
+    active ? "border-orange-500 text-orange-400 bg-zinc-800" : "border-zinc-700 text-zinc-400 hover:border-zinc-600"
+  }`;
 
 export default function ProoflineStudio({ heicConverter } = {}) {
   const [slides, setSlides] = useState([]);
@@ -1254,12 +1496,22 @@ export default function ProoflineStudio({ heicConverter } = {}) {
   const [backdropBrightness, setBackdropBrightness] = useState(100);
   const [backdropBlur, setBackdropBlur] = useState(0);
   const [deviceColorId, setDeviceColorId] = useState("black");
+  const [phoneStyle, setPhoneStyle] = useState("island");
+  const [shadowStrength, setShadowStrength] = useState(100);
+  const [reflection, setReflection] = useState(false);
   const [statusBar, setStatusBar] = useState("light");
   const [captionColor, setCaptionColor] = useState("light");
   const [captionPosition, setCaptionPosition] = useState("top");
+  const [captionAccent, setCaptionAccent] = useState("#FFD23F");
+  const [accentStyle, setAccentStyle] = useState("color"); // 'color' | 'pill'
   const [fontId, setFontId] = useState("system");
   const [padding, setPadding] = useState(1);
   const [exportScale, setExportScale] = useState(2);
+  const [exportFormat, setExportFormat] = useState("png");
+  const [exportQuality, setExportQuality] = useState(92);
+  const [deviceScope, setDeviceScope] = useState("all"); // 'all' | 'slide' — session only
+  const [guides, setGuides] = useState("off"); // 'off' | 'social' | 'store' — preview-only overlay
+  const [captionBatch, setCaptionBatch] = useState("");
   const [isDragging, setIsDragging] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const [isZipping, setIsZipping] = useState(false);
@@ -1270,6 +1522,7 @@ export default function ProoflineStudio({ heicConverter } = {}) {
   const [hydrated, setHydrated] = useState(false);
   const [presets, setPresets] = useState([]);
   const [presetNameDraft, setPresetNameDraft] = useState("");
+  const [histVersion, setHistVersion] = useState(0);
 
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -1279,10 +1532,19 @@ export default function ProoflineStudio({ heicConverter } = {}) {
   const latestPointRef = useRef(null);
   const rafRef = useRef(null);
   const saveTimerRef = useRef(null);
+  const histRef = useRef({ stack: [], idx: -1 });
+  const histTimerRef = useRef(null);
+  const snapshotRef = useRef(null);
+  const undoRef = useRef(() => {});
+  const redoRef = useRef(() => {});
+  const savedImagesRef = useRef(new Set()); // slide ids whose image is already in storage
+  const savedBgSrcRef = useRef(null);
 
   const activeSlide = slides[activeIdx];
-  const ratioObj = RATIOS.find((r) => r.id === ratioId);
-  const deviceInfo = DEVICE_TYPES[deviceTypeId] || DEVICE_TYPES.phone;
+  const ratioObj = ALL_FRAMES.find((r) => r.id === ratioId) || RATIOS[0];
+  const scaleFor = (r) => (r.exact ? 1 : exportScale);
+  const activeDevice = resolveSlideDevice(activeSlide, deviceTypeId, deviceColorId);
+  const deviceInfo = DEVICE_TYPES[activeDevice.deviceTypeId] || DEVICE_TYPES.phone;
   const isTransparent = backdropSource === "color" && colorMode === "none";
   const colors =
     backdropSource === "color"
@@ -1296,11 +1558,116 @@ export default function ProoflineStudio({ heicConverter } = {}) {
         : BACKDROPS[0].colors; // sensible fallback if Image/Unsplash is picked before a photo is actually chosen
   const backdropImg = (backdropSource === "image" || backdropSource === "unsplash") && bgImage ? bgImage.img : null;
   const fontStack = (FONT_CHOICES[fontId] || FONT_CHOICES.system).stack;
-  const secondarySlide = multiLayout !== "single" && activeSlide ? slides.find((s) => s.id === activeSlide.pairId) || null : null;
+  const secondarySlide = pairedSlideFor(activeSlide, slides, multiLayout);
+  const overrideCount = slides.filter((s) => s.deviceTypeId || s.deviceColorId).length;
+  const slideScoped = deviceScope === "slide" && Boolean(activeSlide);
+  const shownDeviceTypeId = slideScoped ? activeDevice.deviceTypeId : deviceTypeId;
+  const shownDeviceColorId = slideScoped ? activeDevice.deviceColorId : deviceColorId;
 
   useEffect(() => {
     activeIdxRef.current = activeIdx;
   }, [activeIdx]);
+
+  /* ---------- state bundles (presets + undo snapshots) ---------- */
+  const settingsState = {
+    ratioId, orientation, tilt, deviceTypeId, deviceColorId, multiLayout,
+    backdropSource, colorMode, gradientIdx, customGradient, solidIdx,
+    customSolidColor, backdropBrightness, backdropBlur, statusBar,
+    captionColor, captionPosition, fontId, padding, exportScale,
+    phoneStyle, shadowStrength, reflection, captionAccent, accentStyle,
+    exportFormat, exportQuality,
+  };
+  const snapshotNow = { ...settingsState, slides, bgImage };
+  snapshotRef.current = snapshotNow;
+
+  const applySettings = (s) => {
+    if (s.ratioId && ALL_FRAMES.some((r) => r.id === s.ratioId)) setRatioId(s.ratioId);
+    if (s.orientation) setOrientation(s.orientation);
+    if (typeof s.tilt === "number") setTilt(s.tilt);
+    if (s.deviceTypeId) setDeviceTypeId(s.deviceTypeId);
+    if (s.deviceColorId) setDeviceColorId(s.deviceColorId);
+    if (s.multiLayout) setMultiLayout(s.multiLayout);
+    if (s.colorMode) setColorMode(s.colorMode);
+    if (typeof s.gradientIdx === "number") setGradientIdx(s.gradientIdx);
+    if (s.customGradient) setCustomGradient(s.customGradient);
+    if (typeof s.solidIdx === "number") setSolidIdx(s.solidIdx);
+    if (s.customSolidColor) setCustomSolidColor(s.customSolidColor);
+    if (typeof s.backdropBrightness === "number") setBackdropBrightness(s.backdropBrightness);
+    if (typeof s.backdropBlur === "number") setBackdropBlur(s.backdropBlur);
+    if (s.statusBar) setStatusBar(s.statusBar);
+    if (s.captionColor) setCaptionColor(s.captionColor);
+    if (s.captionPosition) setCaptionPosition(s.captionPosition);
+    if (s.fontId) setFontId(s.fontId);
+    if (typeof s.padding === "number") setPadding(s.padding);
+    if (typeof s.exportScale === "number") setExportScale(s.exportScale);
+    if (s.phoneStyle && PHONE_STYLES[s.phoneStyle]) setPhoneStyle(s.phoneStyle);
+    if (typeof s.shadowStrength === "number") setShadowStrength(s.shadowStrength);
+    if (typeof s.reflection === "boolean") setReflection(s.reflection);
+    if (s.captionAccent) setCaptionAccent(s.captionAccent);
+    if (s.accentStyle) setAccentStyle(s.accentStyle);
+    if (s.exportFormat && EXPORT_FORMATS[s.exportFormat]) setExportFormat(s.exportFormat);
+    if (typeof s.exportQuality === "number") setExportQuality(s.exportQuality);
+  };
+
+  /* ---------- undo / redo ---------- */
+  const applySnapshot = (s) => {
+    applySettings(s);
+    if (s.backdropSource) setBackdropSource(s.backdropSource);
+    setSlides(s.slides);
+    setBgImage(s.bgImage);
+    setActiveIdx((i) => Math.min(i, Math.max(0, s.slides.length - 1)));
+  };
+
+  const stepHistory = (dir) => {
+    clearTimeout(histTimerRef.current);
+    // Flush any change still waiting on the debounce so it isn't skipped over.
+    const flushed = historyPush(histRef.current, snapshotRef.current);
+    const next = dir < 0 ? historyUndo(flushed) : historyRedo(flushed);
+    histRef.current = next;
+    if (next.idx !== flushed.idx) applySnapshot(next.stack[next.idx]);
+    setHistVersion((v) => v + 1);
+  };
+  undoRef.current = () => stepHistory(-1);
+  redoRef.current = () => stepHistory(1);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    clearTimeout(histTimerRef.current);
+    histTimerRef.current = setTimeout(() => {
+      const h = histRef.current;
+      const next = historyPush(h, snapshotRef.current);
+      if (next !== h) {
+        histRef.current = next;
+        setHistVersion((v) => v + 1);
+      }
+    }, 400);
+    return () => clearTimeout(histTimerRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated, ...SNAPSHOT_FIELDS.map((k) => snapshotNow[k])]);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+      const t = e.target;
+      const tag = t && t.tagName;
+      const textual = tag === "TEXTAREA" || (tag === "INPUT" && !["range", "color", "checkbox"].includes(t.type));
+      if (textual) return;
+      const k = String(e.key).toLowerCase();
+      if (k === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undoRef.current();
+      } else if ((k === "z" && e.shiftKey) || k === "y") {
+        e.preventDefault();
+        redoRef.current();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const canUndo = histRef.current.idx > 0;
+  const canRedo = histRef.current.idx < histRef.current.stack.length - 1;
+  void histVersion;
 
   /* ---------- load saved project on mount ---------- */
   useEffect(() => {
@@ -1309,27 +1676,9 @@ export default function ProoflineStudio({ heicConverter } = {}) {
         const raw = await storage.get(MANIFEST_KEY);
         if (raw) {
           const m = JSON.parse(raw);
-          if (m.ratioId) setRatioId(m.ratioId);
-          if (m.orientation) setOrientation(m.orientation);
-          if (typeof m.tilt === "number") setTilt(m.tilt);
-          if (m.deviceTypeId) setDeviceTypeId(m.deviceTypeId);
-          if (m.multiLayout) setMultiLayout(m.multiLayout);
           if (m.backdropSource) setBackdropSource(m.backdropSource);
-          if (m.colorMode) setColorMode(m.colorMode);
-          if (typeof m.gradientIdx === "number") setGradientIdx(m.gradientIdx);
-          if (m.customGradient) setCustomGradient(m.customGradient);
-          if (typeof m.solidIdx === "number") setSolidIdx(m.solidIdx);
-          if (m.customSolidColor) setCustomSolidColor(m.customSolidColor);
           if (m.unsplashKey) setUnsplashKey(m.unsplashKey);
-          if (typeof m.backdropBrightness === "number") setBackdropBrightness(m.backdropBrightness);
-          if (typeof m.backdropBlur === "number") setBackdropBlur(m.backdropBlur);
-          if (m.deviceColorId) setDeviceColorId(m.deviceColorId);
-          if (m.statusBar) setStatusBar(m.statusBar);
-          if (m.captionColor) setCaptionColor(m.captionColor);
-          if (m.captionPosition) setCaptionPosition(m.captionPosition);
-          if (m.fontId) setFontId(m.fontId);
-          if (typeof m.padding === "number") setPadding(m.padding);
-          if (typeof m.exportScale === "number") setExportScale(m.exportScale);
+          applySettings(m);
 
           if (Array.isArray(m.slides) && m.slides.length) {
             const restored = [];
@@ -1338,7 +1687,8 @@ export default function ProoflineStudio({ heicConverter } = {}) {
                 const src = await storage.get(IMAGE_KEY_PREFIX + meta.id);
                 if (src) {
                   const img = await loadImageFromSrc(src);
-                  restored.push({ ...meta, img });
+                  restored.push({ deviceTypeId: null, deviceColorId: null, ...meta, img });
+                  savedImagesRef.current.add(meta.id);
                 }
               } catch (e) {
                 /* skip slides whose image couldn't be restored */
@@ -1350,10 +1700,16 @@ export default function ProoflineStudio({ heicConverter } = {}) {
             try {
               const src = await storage.get(BGIMAGE_KEY);
               if (src) {
-                const img = await loadImageFromSrc(src);
-                setBgImage({ img, src });
+                // A remote (Unsplash) URL must be re-loaded with CORS, or drawing it
+                // taints the canvas and every export throws a SecurityError.
+                const remote = !src.startsWith("data:");
+                const img = remote ? await loadCrossOriginImage(src) : await loadImageFromSrc(src);
+                savedBgSrcRef.current = src;
+                setBgImage({ img, src, ...(m.bgAttribution ? { attribution: m.bgAttribution } : {}) });
               }
-            } catch (e) {}
+            } catch (e) {
+              setFileError("Your saved background photo couldn't be restored — pick it again.");
+            }
           }
         }
 
@@ -1374,6 +1730,7 @@ export default function ProoflineStudio({ heicConverter } = {}) {
         setHydrated(true);
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /* ---------- debounced autosave ---------- */
@@ -1381,29 +1738,11 @@ export default function ProoflineStudio({ heicConverter } = {}) {
     setSaveStatus("saving");
     try {
       const manifest = {
-        version: 1,
-        ratioId,
-        orientation,
-        tilt,
-        deviceTypeId,
-        multiLayout,
-        backdropSource,
-        colorMode,
-        gradientIdx,
-        customGradient,
-        solidIdx,
-        customSolidColor,
+        version: 2,
+        ...settingsState,
         unsplashKey,
-        backdropBrightness,
-        backdropBlur,
-        deviceColorId,
-        statusBar,
-        captionColor,
-        captionPosition,
-        fontId,
-        padding,
-        exportScale,
         hasBgImage: Boolean(bgImage),
+        bgAttribution: bgImage && bgImage.attribution ? bgImage.attribution : null,
         slides: slides.map((s) => ({
           id: s.id,
           title: s.title,
@@ -1412,42 +1751,36 @@ export default function ProoflineStudio({ heicConverter } = {}) {
           panX: s.panX,
           panY: s.panY,
           pairId: s.pairId || null,
+          deviceTypeId: s.deviceTypeId || null,
+          deviceColorId: s.deviceColorId || null,
         })),
       };
-      await storage.set(MANIFEST_KEY, JSON.stringify(manifest));
+      let ok = await storage.set(MANIFEST_KEY, JSON.stringify(manifest));
+      // Write each image once, and drop images of removed slides — rewriting every
+      // data URL on every save (and never deleting) fills the ~5MB quota, after
+      // which saves fail silently and slides vanish on reload.
+      const live = new Set(slides.map((s) => s.id));
       for (const s of slides) {
-        await storage.set(IMAGE_KEY_PREFIX + s.id, s.img.src);
+        if (savedImagesRef.current.has(s.id)) continue;
+        if (await storage.set(IMAGE_KEY_PREFIX + s.id, s.img.src)) savedImagesRef.current.add(s.id);
+        else ok = false;
       }
-      if (bgImage) await storage.set(BGIMAGE_KEY, bgImage.src);
-      setSaveStatus("saved");
+      for (const id of Array.from(savedImagesRef.current)) {
+        if (!live.has(id)) {
+          await storage.remove(IMAGE_KEY_PREFIX + id);
+          savedImagesRef.current.delete(id);
+        }
+      }
+      if (bgImage && bgImage.src !== savedBgSrcRef.current) {
+        if (await storage.set(BGIMAGE_KEY, bgImage.src)) savedBgSrcRef.current = bgImage.src;
+        else ok = false;
+      }
+      setSaveStatus(ok ? "saved" : "error");
     } catch (e) {
       setSaveStatus("idle");
     }
-  }, [
-    slides,
-    ratioId,
-    orientation,
-    tilt,
-    deviceTypeId,
-    multiLayout,
-    backdropSource,
-    colorMode,
-    gradientIdx,
-    customGradient,
-    solidIdx,
-    customSolidColor,
-    unsplashKey,
-    bgImage,
-    backdropBrightness,
-    backdropBlur,
-    deviceColorId,
-    statusBar,
-    captionColor,
-    captionPosition,
-    fontId,
-    padding,
-    exportScale,
-  ]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slides, unsplashKey, bgImage, ...PRESET_FIELDS.map((k) => settingsState[k])]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -1466,8 +1799,10 @@ export default function ProoflineStudio({ heicConverter } = {}) {
 
   const clearSavedProject = async () => {
     await storage.remove(MANIFEST_KEY);
-    for (const s of slides) await storage.remove(IMAGE_KEY_PREFIX + s.id);
-    if (bgImage) await storage.remove(BGIMAGE_KEY);
+    for (const id of new Set([...slides.map((s) => s.id), ...savedImagesRef.current])) await storage.remove(IMAGE_KEY_PREFIX + id);
+    await storage.remove(BGIMAGE_KEY);
+    savedImagesRef.current = new Set();
+    savedBgSrcRef.current = null;
     setSlides([]);
     setActiveIdx(0);
     setBgImage(null);
@@ -1477,12 +1812,7 @@ export default function ProoflineStudio({ heicConverter } = {}) {
   const savePreset = (name) => {
     const trimmed = name.trim();
     if (!trimmed) return;
-    const settings = presetSettingsFromState({
-      ratioId, orientation, tilt, deviceTypeId, deviceColorId, multiLayout,
-      backdropSource, colorMode, gradientIdx, customGradient, solidIdx,
-      customSolidColor, backdropBrightness, backdropBlur, statusBar,
-      captionColor, captionPosition, fontId, padding, exportScale,
-    });
+    const settings = presetSettingsFromState(settingsState);
     setPresets((prev) => [
       ...prev.filter((p) => p.name !== trimmed),
       { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, name: trimmed, settings },
@@ -1491,28 +1821,10 @@ export default function ProoflineStudio({ heicConverter } = {}) {
 
   const applyPreset = (preset) => {
     const s = preset.settings;
-    if (s.ratioId) setRatioId(s.ratioId);
-    if (s.orientation) setOrientation(s.orientation);
-    if (typeof s.tilt === "number") setTilt(s.tilt);
-    if (s.deviceTypeId) setDeviceTypeId(s.deviceTypeId);
-    if (s.deviceColorId) setDeviceColorId(s.deviceColorId);
-    if (s.multiLayout) setMultiLayout(s.multiLayout);
+    applySettings(s);
     // A photo backdrop isn't saved in a preset; without one loaded, switching would just show the default gradient.
     const needsPhoto = s.backdropSource === "image" || s.backdropSource === "unsplash";
     if (s.backdropSource && (!needsPhoto || bgImage)) setBackdropSource(s.backdropSource);
-    if (s.colorMode) setColorMode(s.colorMode);
-    if (typeof s.gradientIdx === "number") setGradientIdx(s.gradientIdx);
-    if (s.customGradient) setCustomGradient(s.customGradient);
-    if (typeof s.solidIdx === "number") setSolidIdx(s.solidIdx);
-    if (s.customSolidColor) setCustomSolidColor(s.customSolidColor);
-    if (typeof s.backdropBrightness === "number") setBackdropBrightness(s.backdropBrightness);
-    if (typeof s.backdropBlur === "number") setBackdropBlur(s.backdropBlur);
-    if (s.statusBar) setStatusBar(s.statusBar);
-    if (s.captionColor) setCaptionColor(s.captionColor);
-    if (s.captionPosition) setCaptionPosition(s.captionPosition);
-    if (s.fontId) setFontId(s.fontId);
-    if (typeof s.padding === "number") setPadding(s.padding);
-    if (typeof s.exportScale === "number") setExportScale(s.exportScale);
   };
 
   const deletePreset = (id) => setPresets((prev) => prev.filter((p) => p.id !== id));
@@ -1572,6 +1884,8 @@ export default function ProoflineStudio({ heicConverter } = {}) {
           panX: 0,
           panY: 0,
           pairId: null,
+          deviceTypeId: null,
+          deviceColorId: null,
         });
       } else {
         errors.push(r.reason && r.reason.message ? r.reason.message : "Couldn't load a file.");
@@ -1711,6 +2025,26 @@ export default function ProoflineStudio({ heicConverter } = {}) {
     setSlides((prev) => prev.map((s) => ({ ...s, zoom, panX, panY })));
   };
 
+  /* ---------- per-slide device override ---------- */
+  const chooseDeviceType = (id) => {
+    if (slideScoped) updateActiveSlide("deviceTypeId", id);
+    else setDeviceTypeId(id);
+  };
+  const chooseDeviceColor = (id) => {
+    if (slideScoped) updateActiveSlide("deviceColorId", id);
+    else setDeviceColorId(id);
+  };
+  const resetDeviceOverrides = () => {
+    setSlides((prev) => prev.map((s) => (s.deviceTypeId || s.deviceColorId ? { ...s, deviceTypeId: null, deviceColorId: null } : s)));
+  };
+
+  /* ---------- batch captions ---------- */
+  const applyBatchCaptions = () => {
+    const lines = parseCaptionLines(captionBatch);
+    if (!lines.some(Boolean) || !slides.length) return;
+    setSlides((prev) => applyCaptionLines(prev, lines));
+  };
+
   /* ---------- drag-to-pan on the preview canvas ---------- */
   const getPoint = (e) => (e.touches && e.touches[0] ? e.touches[0] : e);
 
@@ -1767,26 +2101,37 @@ export default function ProoflineStudio({ heicConverter } = {}) {
     };
   }, []);
 
-  /* ---------- shared render-options builder ---------- */
-  const buildRenderOpts = (slide) => ({
-    slide,
-    secondarySlide,
-    multiLayout,
-    colors,
-    transparent: isTransparent,
-    backdropImage: backdropImg,
-    backdropBrightness,
-    backdropBlur,
-    deviceScheme: DEVICE_COLORS[deviceColorId],
-    deviceTypeId,
-    statusBarStyle: statusBar,
-    captionColor,
-    captionPosition,
-    fontStack,
-    paddingFactor: padding,
-    orientation,
-    tiltDegrees: tilt,
-  });
+  /* ---------- shared render-options builder ----------
+     Everything that depends on the slide (its device override and its paired
+     slide) is resolved from the slide passed in — NOT from the active slide —
+     so exports of slide N never pick up slide M's pairing or device. */
+  const buildRenderOpts = (slide) => {
+    const dev = resolveSlideDevice(slide, deviceTypeId, deviceColorId);
+    return {
+      slide,
+      secondarySlide: pairedSlideFor(slide, slides, multiLayout),
+      multiLayout,
+      colors,
+      transparent: isTransparent,
+      backdropImage: backdropImg,
+      backdropBrightness,
+      backdropBlur,
+      deviceScheme: DEVICE_COLORS[dev.deviceColorId],
+      deviceTypeId: dev.deviceTypeId,
+      statusBarStyle: statusBar,
+      captionColor,
+      captionPosition,
+      captionAccent,
+      accentStyle,
+      fontStack,
+      paddingFactor: padding,
+      orientation,
+      tiltDegrees: tilt,
+      phoneStyle,
+      shadowStrength,
+      reflection,
+    };
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1811,13 +2156,20 @@ export default function ProoflineStudio({ heicConverter } = {}) {
     statusBar,
     captionColor,
     captionPosition,
+    captionAccent,
+    accentStyle,
     fontStack,
     padding,
     orientation,
     tilt,
+    phoneStyle,
+    shadowStrength,
+    reflection,
   ]);
 
-  /* ---------- export: single PNG, all-slides ZIP, all-ratios ZIP, animated WebM ---------- */
+  /* ---------- export: single image, all-slides ZIP, all-ratios ZIP, animated WebM ---------- */
+  const fmt = EXPORT_FORMATS[exportFormat] || EXPORT_FORMATS.png;
+
   const renderToTempCanvas = (slide, w, h, scale) => {
     const temp = document.createElement("canvas");
     temp.width = w * scale;
@@ -1825,68 +2177,89 @@ export default function ProoflineStudio({ heicConverter } = {}) {
     const ctx = temp.getContext("2d");
     ctx.scale(scale, scale);
     renderMockup(ctx, w, h, buildRenderOpts(slide));
-    return temp;
+    if (exportFormat !== "jpg") return temp;
+    // JPG has no alpha channel: flatten onto white so transparent areas aren't black.
+    const flat = document.createElement("canvas");
+    flat.width = temp.width;
+    flat.height = temp.height;
+    const fctx = flat.getContext("2d");
+    fctx.fillStyle = "#ffffff";
+    fctx.fillRect(0, 0, flat.width, flat.height);
+    fctx.drawImage(temp, 0, 0);
+    return flat;
   };
 
-  const canvasToBlob = (canvas) => new Promise((resolve) => canvas.toBlob((blob) => resolve(blob), "image/png"));
+  const canvasToBlob = (canvas) =>
+    new Promise((resolve, reject) => {
+      try {
+        canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("The browser couldn't encode the image."))), fmt.mime, fmt.lossy ? exportQuality / 100 : undefined);
+      } catch (e) {
+        reject(e); // e.g. SecurityError from a cross-origin (tainted) backdrop
+      }
+    });
 
-  const downloadSlide = (slide, idx) => {
-    const temp = renderToTempCanvas(slide, ratioObj.w, ratioObj.h, exportScale);
+  // Safari silently returns PNG for image/webp; name the file for what it really is.
+  const extFor = (blob) => (blob.type && blob.type !== fmt.mime && blob.type === "image/png" ? "png" : fmt.ext);
+
+  const withExportErrors = async (fn) => {
+    try {
+      await fn();
+    } catch (e) {
+      setFileError(
+        e && e.name === "SecurityError"
+          ? "Export blocked: the background photo is from another site that doesn't allow embedding. Re-pick it, or upload the photo yourself."
+          : "Export failed: " + ((e && e.message) || "unknown error")
+      );
+    }
+  };
+
+  const triggerDownload = (blob, name) => {
+    const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
-    link.download = `proofline-${idx + 1}.png`;
-    link.href = temp.toDataURL("image/png");
+    link.download = name;
+    link.href = url;
     link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
   };
 
-  const handleDownload = () => {
-    if (!activeSlide) return;
-    downloadSlide(activeSlide, activeIdx);
-  };
+  const handleDownload = () =>
+    activeSlide &&
+    withExportErrors(async () => {
+      const temp = renderToTempCanvas(activeSlide, ratioObj.w, ratioObj.h, scaleFor(ratioObj));
+      const blob = await canvasToBlob(temp);
+      triggerDownload(blob, `proofline-${activeIdx + 1}.${extFor(blob)}`);
+    });
 
   const handleDownloadAll = async () => {
     if (!slides.length || isZipping) return;
     setIsZipping(true);
-    try {
+    await withExportErrors(async () => {
       const files = [];
       for (let i = 0; i < slides.length; i++) {
-        const temp = renderToTempCanvas(slides[i], ratioObj.w, ratioObj.h, exportScale);
+        const temp = renderToTempCanvas(slides[i], ratioObj.w, ratioObj.h, scaleFor(ratioObj));
         const blob = await canvasToBlob(temp);
-        files.push({ name: `proofline-${i + 1}.png`, blob });
+        files.push({ name: `proofline-${i + 1}.${extFor(blob)}`, blob });
       }
-      const zipBlob = await buildZip(files);
-      const url = URL.createObjectURL(zipBlob);
-      const link = document.createElement("a");
-      link.download = "proofline-mockups.zip";
-      link.href = url;
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 4000);
-    } finally {
-      setIsZipping(false);
-    }
+      triggerDownload(await buildZip(files), "proofline-mockups.zip");
+    });
+    setIsZipping(false);
   };
 
   const handleExportAllRatios = async () => {
     if (!slides.length || isZipping) return;
     setIsZipping(true);
-    try {
+    await withExportErrors(async () => {
       const files = [];
-      for (const r of RATIOS) {
+      for (const r of ALL_FRAMES) {
         for (let i = 0; i < slides.length; i++) {
-          const temp = renderToTempCanvas(slides[i], r.w, r.h, exportScale);
+          const temp = renderToTempCanvas(slides[i], r.w, r.h, scaleFor(r));
           const blob = await canvasToBlob(temp);
-          files.push({ name: `proofline-${r.id.replace(":", "x")}-${i + 1}.png`, blob });
+          files.push({ name: `proofline-${frameTag(r.id)}-${i + 1}.${extFor(blob)}`, blob });
         }
       }
-      const zipBlob = await buildZip(files);
-      const url = URL.createObjectURL(zipBlob);
-      const link = document.createElement("a");
-      link.download = "proofline-all-ratios.zip";
-      link.href = url;
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 4000);
-    } finally {
-      setIsZipping(false);
-    }
+      triggerDownload(await buildZip(files), "proofline-all-ratios.zip");
+    });
+    setIsZipping(false);
   };
 
   const isVideoExportSupported = () =>
@@ -2003,13 +2376,7 @@ export default function ProoflineStudio({ heicConverter } = {}) {
 
       recorder.stop();
       await stopped;
-      const blob = new Blob(chunks, { type: mimeType.split(";")[0] });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.download = "proofline-demo.webm";
-      link.href = url;
-      link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      triggerDownload(new Blob(chunks, { type: mimeType.split(";")[0] }), "proofline-demo.webm");
     } catch (e) {
       setFileError("Animated export failed: " + (e && e.message ? e.message : "unknown error"));
     } finally {
@@ -2080,12 +2447,26 @@ export default function ProoflineStudio({ heicConverter } = {}) {
                 ...(isTransparent ? CHECKER_STYLE : {}),
               }}
             />
+            {guides !== "off" && (
+              <div className="absolute inset-0 pointer-events-none rounded-xl overflow-hidden" data-testid="guides">
+                {guides === "social" ? (
+                  <>
+                    <div className="absolute inset-x-0 top-0 border-b border-dashed border-red-400 bg-red-500/15" style={{ height: "14%" }} />
+                    <div className="absolute inset-x-0 bottom-0 border-t border-dashed border-red-400 bg-red-500/15" style={{ height: "20%" }} />
+                    <span className="absolute top-1 left-2 text-[9px] font-mono text-red-100 bg-red-600/70 px-1 rounded">UI zone</span>
+                    <span className="absolute bottom-1 left-2 text-[9px] font-mono text-red-100 bg-red-600/70 px-1 rounded">UI zone</span>
+                  </>
+                ) : (
+                  <div className="absolute border border-dashed border-cyan-300" style={{ inset: "5%" }} />
+                )}
+              </div>
+            )}
           </div>
         )}
 
         {slides.length > 0 && ratioObj && (
           <p className="font-mono text-xs text-stone-400 mt-4 tracking-wide text-center">
-            {ratioObj.w} × {ratioObj.h} · {ratioObj.id} · {deviceInfo.name} · @{exportScale}×{" "}
+            {ratioObj.w} × {ratioObj.h} · {ratioObj.label || ratioObj.id} · {deviceInfo.name} · @{scaleFor(ratioObj)}×{" "}
             {isTransparent ? "· transparent" : ""}
           </p>
         )}
@@ -2102,6 +2483,14 @@ export default function ProoflineStudio({ heicConverter } = {}) {
                 >
                   <img src={s.img.src} alt="" className="w-full h-full object-cover" />
                 </button>
+                {(s.deviceTypeId || s.deviceColorId) && (
+                  <span
+                    title="Uses its own device"
+                    className="absolute bottom-0.5 left-0.5 text-[8px] font-mono bg-orange-500 text-zinc-950 rounded px-0.5 leading-tight"
+                  >
+                    dev
+                  </span>
+                )}
                 <div className="absolute -top-1.5 -right-1.5 flex gap-0.5">
                   <button
                     onClick={() => duplicateSlide(i)}
@@ -2168,11 +2557,33 @@ export default function ProoflineStudio({ heicConverter } = {}) {
             <h1 className="font-mono text-lg tracking-widest text-white uppercase">Proofline</h1>
             <p className="text-sm text-zinc-500 mt-1">Frame screenshots into shippable mockups.</p>
           </div>
-          {slides.length > 0 && (
-            <span className="font-mono text-xs text-zinc-600 flex-shrink-0 pt-1">
-              {saveStatus === "saving" ? "saving…" : saveStatus === "saved" ? "saved" : ""}
-            </span>
-          )}
+          <div className="flex items-center gap-1 flex-shrink-0 pt-1">
+            <button
+              onClick={() => undoRef.current()}
+              disabled={!canUndo}
+              title="Undo (Ctrl/⌘+Z)"
+              aria-label="Undo"
+              className="w-7 h-7 flex items-center justify-center rounded-md text-zinc-400 hover:text-white hover:bg-zinc-800 disabled:opacity-25 disabled:hover:bg-transparent"
+            >
+              <Undo2 className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => redoRef.current()}
+              disabled={!canRedo}
+              title="Redo (Ctrl/⌘+Shift+Z)"
+              aria-label="Redo"
+              className="w-7 h-7 flex items-center justify-center rounded-md text-zinc-400 hover:text-white hover:bg-zinc-800 disabled:opacity-25 disabled:hover:bg-transparent"
+            >
+              <Redo2 className="w-4 h-4" />
+            </button>
+            {slides.length > 0 && (
+              <span className="font-mono text-xs text-zinc-600 w-12 text-right">
+                {saveStatus === "saving" ? "saving…" : saveStatus === "saved" ? "saved" : saveStatus === "error" ? (
+                  <span className="text-red-400" title="Browser storage is full or blocked — your work won't survive a reload. Export what you need.">not saved</span>
+                ) : ""}
+              </span>
+            )}
+          </div>
         </div>
 
         <Section n="00" title="Presets">
@@ -2245,21 +2656,47 @@ export default function ProoflineStudio({ heicConverter } = {}) {
         </Section>
 
         <Section n="02" title="Device">
+          {slides.length > 0 && (
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { id: "all", label: "All slides" },
+                { id: "slide", label: "This slide only" },
+              ].map((o) => (
+                <button key={o.id} onClick={() => setDeviceScope(o.id)} className={optBtn(deviceScope === o.id)}>
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="grid grid-cols-3 gap-2">
             {Object.values(DEVICE_TYPES).map((d) => (
-              <button
-                key={d.id}
-                onClick={() => setDeviceTypeId(d.id)}
-                className={`py-2 rounded-md text-xs border transition-colors ${
-                  deviceTypeId === d.id
-                    ? "border-orange-500 text-orange-400 bg-zinc-800"
-                    : "border-zinc-700 text-zinc-400 hover:border-zinc-600"
-                }`}
-              >
+              <button key={d.id} onClick={() => chooseDeviceType(d.id)} className={optBtn(shownDeviceTypeId === d.id)}>
                 {d.name}
               </button>
             ))}
           </div>
+          {overrideCount > 0 && (
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs text-zinc-500">
+                {overrideCount} slide{overrideCount === 1 ? "" : "s"} use their own device.
+              </p>
+              <button onClick={resetDeviceOverrides} className="text-xs text-zinc-400 hover:text-zinc-200 underline flex-shrink-0">
+                Reset all to global
+              </button>
+            </div>
+          )}
+          {shownDeviceTypeId === "phone" && (
+            <div>
+              <p className="text-xs text-zinc-500 mb-2">Screen cutout</p>
+              <div className="grid grid-cols-4 gap-2">
+                {Object.entries(PHONE_STYLES).map(([key, p]) => (
+                  <button key={key} onClick={() => setPhoneStyle(key)} className={optBtn(phoneStyle === key)}>
+                    {p.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </Section>
 
         <Section n="03" title="Frame">
@@ -2268,28 +2705,26 @@ export default function ProoflineStudio({ heicConverter } = {}) {
               <button
                 key={r.id}
                 onClick={() => setRatioId(r.id)}
-                className={`py-2 rounded-md text-xs font-mono border transition-colors ${
-                  ratioId === r.id
-                    ? "border-orange-500 text-orange-400 bg-zinc-800"
-                    : "border-zinc-700 text-zinc-400 hover:border-zinc-600"
-                }`}
+                className={`${optBtn(ratioId === r.id)} font-mono`}
               >
                 {r.id}
               </button>
             ))}
           </div>
+          <div>
+            <p className="text-xs text-zinc-500 mb-2">App Store sizes (exact pixels, always 1×)</p>
+            <div className="grid grid-cols-3 gap-2">
+              {STORE_SIZES.map((r) => (
+                <button key={r.id} onClick={() => setRatioId(r.id)} className={optBtn(ratioId === r.id)} title={`${r.w} × ${r.h}`}>
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          </div>
           {deviceInfo.allowOrientation && (
             <div className="grid grid-cols-2 gap-2">
               {["portrait", "landscape"].map((o) => (
-                <button
-                  key={o}
-                  onClick={() => setOrientation(o)}
-                  className={`py-2 rounded-md text-xs capitalize border transition-colors ${
-                    orientation === o
-                      ? "border-orange-500 text-orange-400 bg-zinc-800"
-                      : "border-zinc-700 text-zinc-400 hover:border-zinc-600"
-                  }`}
-                >
+                <button key={o} onClick={() => setOrientation(o)} className={`${optBtn(orientation === o)} capitalize`}>
                   {o}
                 </button>
               ))}
@@ -2299,10 +2734,10 @@ export default function ProoflineStudio({ heicConverter } = {}) {
             {Object.entries(DEVICE_COLORS).map(([key, c]) => (
               <button
                 key={key}
-                onClick={() => setDeviceColorId(key)}
+                onClick={() => chooseDeviceColor(key)}
                 title={c.name}
                 className={`w-7 h-7 rounded-full border-2 transition-colors ${
-                  deviceColorId === key ? "border-orange-500" : "border-transparent"
+                  shownDeviceColorId === key ? "border-orange-500" : "border-transparent"
                 }`}
                 style={{ backgroundColor: c.body }}
               />
@@ -2315,19 +2750,36 @@ export default function ProoflineStudio({ heicConverter } = {}) {
             </div>
             <input type="range" min="-15" max="15" step="1" value={tilt} onChange={(e) => setTilt(parseInt(e.target.value, 10))} className="w-full accent-orange-500" />
           </div>
+          <div>
+            <p className="text-xs text-zinc-500 mb-2">Preview guides (never exported)</p>
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                { id: "off", label: "Off" },
+                { id: "social", label: "Social UI" },
+                { id: "store", label: "Safe area" },
+              ].map((g) => (
+                <button key={g.id} onClick={() => setGuides(g.id)} className={optBtn(guides === g.id)}>
+                  {g.label}
+                </button>
+              ))}
+            </div>
+          </div>
         </Section>
 
-        <Section n="04" title="Zoom">
+        <Section n="04" title="Device size">
           <div>
             <div className="flex items-center justify-between text-xs text-zinc-400 mb-1">
-              <span>Device size</span>
+              <span>How large the device sits in the frame</span>
               <span className="font-mono">{Math.round(padding * 100)}%</span>
             </div>
             <input type="range" min="0.5" max="1" step="0.05" value={padding} onChange={(e) => setPadding(parseFloat(e.target.value))} className="w-full accent-orange-500" />
           </div>
+        </Section>
+
+        <Section n="05" title="Screenshot zoom">
           <div>
             <div className="flex items-center justify-between text-xs text-zinc-400 mb-1">
-              <span>Screenshot zoom</span>
+              <span>Zoom inside the screen</span>
               <span className="font-mono">{zoomVal.toFixed(2)}×</span>
             </div>
             <input
@@ -2357,18 +2809,25 @@ export default function ProoflineStudio({ heicConverter } = {}) {
           )}
         </Section>
 
-        <Section n="05" title="Layout">
+        <Section n="06" title="Effects">
+          <div>
+            <div className="flex items-center justify-between text-xs text-zinc-400 mb-1">
+              <span>Shadow</span>
+              <span className="font-mono">{shadowStrength}%</span>
+            </div>
+            <input type="range" min="0" max="200" step="10" value={shadowStrength} onChange={(e) => setShadowStrength(parseInt(e.target.value, 10))} className="w-full accent-orange-500" />
+          </div>
+          <label className="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer">
+            <input type="checkbox" checked={reflection} onChange={(e) => setReflection(e.target.checked)} className="accent-orange-500" />
+            Floor reflection
+          </label>
+          {reflection && <p className="text-xs text-zinc-600">Needs empty space below the device — lower “Device size” to see it.</p>}
+        </Section>
+
+        <Section n="07" title="Layout">
           <div className="grid grid-cols-3 gap-2">
             {["single", "fan", "side-by-side"].map((l) => (
-              <button
-                key={l}
-                onClick={() => setMultiLayout(l)}
-                className={`py-2 rounded-md text-xs border transition-colors capitalize ${
-                  multiLayout === l
-                    ? "border-orange-500 text-orange-400 bg-zinc-800"
-                    : "border-zinc-700 text-zinc-400 hover:border-zinc-600"
-                }`}
-              >
+              <button key={l} onClick={() => setMultiLayout(l)} className={`${optBtn(multiLayout === l)} capitalize`}>
                 {l === "side-by-side" ? "Side-by-side" : l}
               </button>
             ))}
@@ -2396,22 +2855,14 @@ export default function ProoflineStudio({ heicConverter } = {}) {
           )}
         </Section>
 
-        <Section n="06" title="Background">
+        <Section n="08" title="Background">
           <div className="grid grid-cols-3 gap-2">
             {[
               { id: "color", label: "Color" },
               { id: "image", label: "Image" },
               { id: "unsplash", label: "Unsplash" },
             ].map((s) => (
-              <button
-                key={s.id}
-                onClick={() => setBackdropSource(s.id)}
-                className={`py-2 rounded-md text-xs border transition-colors ${
-                  backdropSource === s.id
-                    ? "border-orange-500 text-orange-400 bg-zinc-800"
-                    : "border-zinc-700 text-zinc-400 hover:border-zinc-600"
-                }`}
-              >
+              <button key={s.id} onClick={() => setBackdropSource(s.id)} className={optBtn(backdropSource === s.id)}>
                 {s.label}
               </button>
             ))}
@@ -2620,18 +3071,10 @@ export default function ProoflineStudio({ heicConverter } = {}) {
         </Section>
 
         {deviceInfo.hasStatusBar && (
-          <Section n="07" title="Status bar">
+          <Section n="09" title="Status bar">
             <div className="grid grid-cols-3 gap-2">
               {["off", "light", "dark"].map((opt) => (
-                <button
-                  key={opt}
-                  onClick={() => setStatusBar(opt)}
-                  className={`py-2 rounded-md text-xs capitalize border transition-colors ${
-                    statusBar === opt
-                      ? "border-orange-500 text-orange-400 bg-zinc-800"
-                      : "border-zinc-700 text-zinc-400 hover:border-zinc-600"
-                  }`}
-                >
+                <button key={opt} onClick={() => setStatusBar(opt)} className={`${optBtn(statusBar === opt)} capitalize`}>
                   {opt}
                 </button>
               ))}
@@ -2639,9 +3082,9 @@ export default function ProoflineStudio({ heicConverter } = {}) {
           </Section>
         )}
 
-        <Section n="08" title="Caption">
+        <Section n="10" title="Caption">
           <input
-            type="text" placeholder="Headline (optional)"
+            type="text" placeholder="Headline — wrap words in *stars* to highlight"
             value={activeSlide && activeSlide.title ? activeSlide.title : ""}
             onChange={(e) => updateActiveSlide("title", e.target.value)}
             disabled={!activeSlide}
@@ -2680,6 +3123,25 @@ export default function ProoflineStudio({ heicConverter } = {}) {
               </button>
             ))}
           </div>
+          <div className="flex items-center gap-3">
+            <input
+              type="color"
+              value={captionAccent}
+              onChange={(e) => setCaptionAccent(e.target.value)}
+              aria-label="Highlight color"
+              className="w-8 h-8 rounded border border-zinc-700 bg-transparent flex-shrink-0"
+            />
+            <div className="grid grid-cols-2 gap-2 flex-1">
+              {[
+                { id: "color", label: "Color" },
+                { id: "pill", label: "Pill" },
+              ].map((o) => (
+                <button key={o.id} onClick={() => setAccentStyle(o.id)} className={optBtn(accentStyle === o.id)}>
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="grid grid-cols-4 gap-2">
             {Object.entries(FONT_CHOICES).map(([key, f]) => (
               <button
@@ -2694,28 +3156,70 @@ export default function ProoflineStudio({ heicConverter } = {}) {
               </button>
             ))}
           </div>
+          {slides.length > 1 && (
+            <div className="space-y-2 pt-1">
+              <p className="text-xs text-zinc-500">
+                Batch captions — one line per slide, <span className="font-mono">Headline | Subheadline</span>. A blank line leaves that slide unchanged.
+              </p>
+              <textarea
+                value={captionBatch}
+                onChange={(e) => setCaptionBatch(e.target.value)}
+                rows={4}
+                placeholder={"Track every *habit* | Simple daily check-ins\nSee your progress\n\nShare with friends"}
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-2 text-sm placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+              />
+              <button
+                onClick={applyBatchCaptions}
+                disabled={!captionBatch.trim()}
+                className="w-full py-2 rounded-md bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 text-xs font-medium disabled:opacity-40"
+              >
+                Apply to {slides.length} slides in order
+              </button>
+            </div>
+          )}
         </Section>
 
-        <Section n="09" title="Export">
+        <Section n="11" title="Export">
+          <div className="grid grid-cols-3 gap-2">
+            {Object.entries(EXPORT_FORMATS).map(([key, f]) => (
+              <button key={key} onClick={() => setExportFormat(key)} className={`${optBtn(exportFormat === key)} font-mono`}>
+                {f.name}
+              </button>
+            ))}
+          </div>
+          {fmt.lossy && (
+            <div>
+              <div className="flex items-center justify-between text-xs text-zinc-400 mb-1">
+                <span>Quality</span>
+                <span className="font-mono">{exportQuality}%</span>
+              </div>
+              <input type="range" min="50" max="100" step="1" value={exportQuality} onChange={(e) => setExportQuality(parseInt(e.target.value, 10))} className="w-full accent-orange-500" />
+              {exportFormat === "jpg" && isTransparent && (
+                <p className="text-xs text-zinc-600 mt-1">JPG can’t be transparent — it exports on white. Use PNG or WebP to keep transparency.</p>
+              )}
+            </div>
+          )}
           <div className="flex gap-2">
             {[1, 2, 3].map((s) => (
               <button
                 key={s}
                 onClick={() => setExportScale(s)}
-                className={`flex-1 py-2 rounded-md text-xs font-mono border transition-colors ${
-                  exportScale === s ? "border-orange-500 text-orange-400 bg-zinc-800" : "border-zinc-700 text-zinc-400 hover:border-zinc-600"
+                disabled={ratioObj.exact}
+                className={`flex-1 py-2 rounded-md text-xs font-mono border transition-colors disabled:opacity-40 ${
+                  scaleFor(ratioObj) === s ? "border-orange-500 text-orange-400 bg-zinc-800" : "border-zinc-700 text-zinc-400 hover:border-zinc-600"
                 }`}
               >
                 {s}×
               </button>
             ))}
           </div>
+          {ratioObj.exact && <p className="text-xs text-zinc-600">App Store sizes export at exactly {ratioObj.w} × {ratioObj.h}.</p>}
           <button
             onClick={handleDownload}
             disabled={!activeSlide}
             className="w-full flex items-center justify-center gap-2 py-3 rounded-lg bg-orange-500 hover:bg-orange-400 text-zinc-950 font-semibold text-sm transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
           >
-            <Download className="w-4 h-4" /> Download PNG
+            <Download className="w-4 h-4" /> Download {fmt.name}
           </button>
           {slides.length > 1 && (
             <button
@@ -2732,7 +3236,7 @@ export default function ProoflineStudio({ heicConverter } = {}) {
               disabled={isZipping}
               className="w-full text-center text-xs text-zinc-400 hover:text-zinc-200 py-1 transition-colors disabled:opacity-50"
             >
-              {isZipping ? "Zipping…" : `Export all ${RATIOS.length} ratios as ZIP`}
+              {isZipping ? "Zipping…" : `Export all ${ALL_FRAMES.length} sizes as ZIP`}
             </button>
           )}
           {activeSlide && (

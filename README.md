@@ -15,7 +15,7 @@ Proofline turns plain app screenshots into polished marketing visuals. It is a f
 - **Backdrop:** transparent, solid, gradient, your own photo, or an Unsplash search (bring your own free API key). Brightness and blur for photo backdrops.
 - **Captions:** headline and subheadline, four positions, light or dark text, four fonts.
 - **Screenshot control:** zoom 1x to 2.5x, drag to pan, apply to all slides.
-- **Presets:** save, apply and delete named looks (20 settings). Presets never include your screenshots, zoom/pan or the Unsplash key.
+- **Presets:** save, apply and delete named looks (27 settings). Presets never include your screenshots, zoom/pan or the Unsplash key.
 - **Export:** PNG at 1x, 2x or 3x, ZIP of all slides, ZIP of all ratios, animated WebM. Seven ratios from 9:16 to 16:9.
 - **Autosave:** your project is restored on reload (`window.storage`, falling back to `localStorage`).
 
@@ -41,6 +41,12 @@ npm test        # builds with esbuild, then runs the node test suite
 | `presets-ui.test.mjs` | Presets in the real component (jsdom, real `localStorage`, no mocks): save, apply, delete, reload, corrupt storage |
 | `presets-logic.test.mjs` | Which settings a preset captures |
 | `render-regression.test.mjs` | Pixel checks that glare and bezels never hide the screenshot, on every device and colour |
+
+| `tests/logic.test.mjs` | Pure logic: device sizing, undo history, per-slide device, captions, presets, ZIP |
+| `tests/engine.browser.test.mjs` | Real Chromium: 2x/3x output matches 1x, zoom/pan, every device/layout/frame |
+| `tests/app.browser.test.mjs` | The real app in Chromium: undo/redo, storage cleanup, reload restore, App Store export size |
+
+The `tests/` browser suites need Chromium (set `CHROMIUM=/path/to/chrome` if it isn't at the Playwright default).
 
 Helpers: `render-check.mjs` renders one mockup to PNG through node-canvas, `sheet.mjs` tiles renders into a comparison sheet, and `mutate*.py` are the mutation scripts used to confirm the tests can fail.
 
