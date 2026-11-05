@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- Fan and side-by-side: the paired slide's device colour override is now honoured (device type is still the primary slide's).
 - 2x/3x exports had a thinner shadow and weaker backdrop blur than the preview (canvas shadow/filter lengths ignore `ctx.scale`); tilted devices had a sideways-skewed shadow.
 - A saved Unsplash background broke every export after a reload (canvas tainted by a non-CORS reload); it is now reloaded with CORS, the user is told if it fails, and the credit survives reload.
 - Storage no longer fills silently: images are written once, removed with their slide, and a failed save shows "not saved".

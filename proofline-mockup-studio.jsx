@@ -1160,6 +1160,7 @@ export function renderMockup(ctx, w, h, opts) {
   const {
     slide,
     secondarySlide,
+    secondaryDeviceScheme,
     multiLayout,
     colors,
     transparent,
@@ -1249,6 +1250,10 @@ export function renderMockup(ctx, w, h, opts) {
         : computeSideBySideRects(availRect, deviceInfo.aspect, paddingFactor);
     const order = multiLayout === "fan" ? [rects.back, rects.front] : [rects.left, rects.right];
     const slides = multiLayout === "fan" ? [secondarySlide, slide] : [slide, secondarySlide];
+    // The paired slide keeps its own body colour. Device TYPE stays the primary's:
+    // both rects are sized from one aspect ratio (shortcut: mixed types need per-device rects).
+    const secScheme = secondaryDeviceScheme || deviceScheme;
+    const schemes = multiLayout === "fan" ? [secScheme, deviceScheme] : [deviceScheme, secScheme];
     order.forEach((r, i) => {
       const s = slides[i];
       const img = s ? s.img : null;
@@ -1265,7 +1270,7 @@ export function renderMockup(ctx, w, h, opts) {
         zoom,
         panX,
         panY,
-        deviceScheme,
+        schemes[i],
         statusBarStyle,
         fx
       );
@@ -2107,9 +2112,11 @@ export default function ProoflineStudio({ heicConverter } = {}) {
      so exports of slide N never pick up slide M's pairing or device. */
   const buildRenderOpts = (slide) => {
     const dev = resolveSlideDevice(slide, deviceTypeId, deviceColorId);
+    const pair = pairedSlideFor(slide, slides, multiLayout);
     return {
       slide,
-      secondarySlide: pairedSlideFor(slide, slides, multiLayout),
+      secondarySlide: pair,
+      secondaryDeviceScheme: pair ? DEVICE_COLORS[resolveSlideDevice(pair, deviceTypeId, deviceColorId).deviceColorId] : undefined,
       multiLayout,
       colors,
       transparent: isTransparent,

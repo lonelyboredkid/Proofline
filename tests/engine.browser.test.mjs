@@ -106,3 +106,15 @@ test("floor reflection paints below the device only when enabled", async () => {
   });
   assert.ok(d[0] - d[1] > 8, `off=${d[0]} on=${d[1]}`);
 });
+test("side-by-side: the paired slide keeps its own body colour; the primary's device is unchanged", async () => {
+  const r = await page.evaluate(() => {
+    const t = T, slide2 = { img: t.shot, title: "", subtitle: "", zoom: 1, panX: 0, panY: 0 };
+    const base = { multiLayout: "side-by-side", secondarySlide: slide2 };
+    const same = t.down(t.render(1, base));
+    const mixed = t.down(t.render(1, { ...base, secondaryDeviceScheme: t.P.DEVICE_COLORS.gold }));
+    const half = (a, left) => { const o = []; for (let y = 0; y < t.H; y++) for (let x = left ? 0 : t.W / 2; x < (left ? t.W / 2 : t.W); x++) o.push(...a.slice((y * t.W + x) * 4, (y * t.W + x) * 4 + 4)); return Uint8ClampedArray.from(o); };
+    return { left: t.diff(half(same, true), half(mixed, true)), right: t.diff(half(same, false), half(mixed, false)) };
+  });
+  assert.ok(r.left < 0.05, `primary device changed: ${r.left}`);
+  assert.ok(r.right > 0.3, `paired device colour ignored: ${r.right}`);
+});

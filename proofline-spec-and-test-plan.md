@@ -52,7 +52,7 @@ Open request: **"4:5 top / 4:5 bottom" ratios** (see §3, O1) — needs a defini
 
 ### Still open
 O1. **"4:5 top" / "4:5 bottom"** from the original request: only a single `4:5` exists. Needs a definition of what top/bottom anchoring means for the crop.
-O2. **Fan / side-by-side use the primary slide's device and colour for both devices** (the paired slide's override is ignored).
+O2. **Fan / side-by-side use the primary slide's device TYPE for both devices** (body colour is now per slide; mixing types needs per-device rects).
 O3. **Reflection allocates two full-canvas buffers per device per render**; heavy with reflection on during WebM export.
 O4. **Safe-area guide percentages are approximate** (5 % inset; social 14 % top / 20 % bottom), not Apple's/Instagram's published numbers.
 O5. **Not tested:** real `window.storage` in the Claude.ai artifact runtime, HEIC conversion, Unsplash network search, WebM recording output, Safari/Firefox rendering.
